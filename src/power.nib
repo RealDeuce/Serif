@@ -1,0 +1,48 @@
+// power.nib — Power management driver
+//
+// First-pass implementation: power off only. Save/restore for
+// sleep/wake and IRQ handlers for F8/FF are deferred.
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const PWR_OFF = 0x00;  // power off the system
+
+const PWR_API_SIZE = 0x04;  // 1 entry × 4 bytes
+const PWR_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+fn off() clobbers(AX, FLAGS) {
+    IF := 0;
+    port_out(PORT_POWER, 0x01);
+    // CPU halts after the power strobe — loop in case it doesn't
+top:
+    halt();
+    goto top;
+}
+
+// ---------------------------------------------------------------------------
+// Jump table (must follow function definitions)
+// ---------------------------------------------------------------------------
+
+pub far[1] power_table = {&off};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn power_init() {
+    // Register with service locator
+    register(DEV_POWER, PWR_VERSION, &power_table, PWR_API_SIZE);
+
+    // TODO: Install IRQ handlers for vectors F8 (power/timer wake)
+    // and FF (power/warm wake) once save/restore is implemented.
+}

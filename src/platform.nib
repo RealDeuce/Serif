@@ -1,0 +1,163 @@
+// platform.nib — NEC V20HL CPU and LC92040D-791 gate array constants
+//
+// This file defines the hardware interface for the DreamWriter platform
+// ASIC and CPU. Constants for separate chips (USART, RTC, FDC) belong
+// in their respective driver files.
+
+// ---------------------------------------------------------------------------
+// System clocks
+// ---------------------------------------------------------------------------
+
+pub const XTAL      = 19660000;  // master crystal frequency (Hz)
+pub const CPU_CLOCK =  9830000;  // V20 CPU clock (XTAL / 2)
+
+// ---------------------------------------------------------------------------
+// V20 CPU flags
+// ---------------------------------------------------------------------------
+
+pub const FLAG_CF = 0x0001;  // carry
+pub const FLAG_PF = 0x0004;  // parity
+pub const FLAG_AF = 0x0010;  // auxiliary carry
+pub const FLAG_ZF = 0x0040;  // zero
+pub const FLAG_SF = 0x0080;  // sign
+pub const FLAG_TF = 0x0100;  // trap / single-step
+pub const FLAG_IF = 0x0200;  // interrupt enable
+pub const FLAG_DF = 0x0400;  // direction
+pub const FLAG_OF = 0x0800;  // overflow
+pub const FLAG_MD = 0x8000;  // V20 mode bit (distinguishes V20 from 8086)
+
+// ---------------------------------------------------------------------------
+// Memory layout
+// ---------------------------------------------------------------------------
+
+pub const NUM_BANKS = 8;        // memory bank registers (ports 0x10–0x17)
+pub const BANK_SIZE = 0x20000;  // 128 KiB per bank window
+
+pub const BANK_RAM    = 0x10;  // OR into bank value to select RAM
+pub const BANK_PCMCIA = 0x18;  // base bank value for PC Card pages
+
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
+pub const LCD_WIDTH      = 480;  // pixels
+pub const LCD_HEIGHT_64  =  64;  // T400 model (64 rows)
+pub const LCD_HEIGHT_128 = 128;  // T200 / T500 models (128 rows)
+pub const LCD_STRIDE     =  60;  // bytes per row (480 / 8)
+
+// ---------------------------------------------------------------------------
+// Gate array I/O ports (LC92040D-791)
+// ---------------------------------------------------------------------------
+
+// LCD and memory banking
+pub const PORT_LCD_BASE = 0x00;  // W: LCD on / frame buffer base select
+pub const PORT_BANK0    = 0x10;  // W: bank select register 0
+pub const PORT_BANK1    = 0x11;  // W: bank select register 1
+pub const PORT_BANK2    = 0x12;  // W: bank select register 2
+pub const PORT_BANK3    = 0x13;  // W: bank select register 3
+pub const PORT_BANK4    = 0x14;  // W: bank select register 4
+pub const PORT_BANK5    = 0x15;  // W: bank select register 5
+pub const PORT_BANK6    = 0x16;  // W: bank select register 6
+pub const PORT_BANK7    = 0x17;  // W: bank select register 7
+
+// System control
+pub const PORT_CARD_WAIT = 0x20;  // W: PC Card SRAM wait state (bit 7: 1=wait, 0=no wait)
+pub const PORT_CONTROL  = 0x30;  // W: control latch (baud, RS-232, strobes)
+
+// Centronics parallel
+pub const PORT_CENTRONICS = 0x40;  // W: parallel data output
+
+// Buzzer and timer
+pub const PORT_BUZZER_LO = 0x50;  // W: tone counter low byte
+pub const PORT_BUZZER_HI = 0x51;  // W: tone counter high byte
+pub const PORT_BUZZER_EN = 0x52;  // W: buzzer enable/disable
+pub const PORT_TIMER     = 0x53;  // W: F9 one-shot timer latch
+
+// Interrupt controller
+pub const PORT_IRQ_MASK  = 0x60;  // R/W: IRQ enable mask (active-low)
+pub const PORT_IRQ_CLEAR = 0x90;  // W: clear pending IRQ source
+
+// Keyboard
+pub const PORT_KBD_SEQ = 0x61;  // W: row-scan sequencer control
+pub const PORT_KBD_ROW = 0xB0;  // R: current keyboard row data
+
+// Power management
+pub const PORT_POWER = 0x70;  // W: power transition / reset strobe
+
+// System status
+pub const PORT_STATUS = 0xA0;  // R: battery, PCMCIA, centronics status
+
+// ---------------------------------------------------------------------------
+// Control latch bits (PORT_CONTROL / 0x30)
+// ---------------------------------------------------------------------------
+
+pub const CTRL_BAUD_MASK      = 0x07;  // bits [0:2]: RS-232 baud divider
+pub const CTRL_USART_STROBE   = 0x08;  // bit 3: USART setup strobe
+pub const CTRL_RS232_EN       = 0x10;  // bit 4: RS-232 enable
+pub const CTRL_CENTRONICS_STB = 0x20;  // bit 5: Centronics -STB pulse
+pub const CTRL_DIAGNOSTIC     = 0x80;  // bit 7: diagnostic external control
+
+// ---------------------------------------------------------------------------
+// IRQ mask bits (PORT_IRQ_MASK / 0x60) — active-low enable
+// ---------------------------------------------------------------------------
+
+pub const IRQ_F8 = 0x01;
+pub const IRQ_F9 = 0x02;
+pub const IRQ_FA = 0x04;
+pub const IRQ_FB = 0x08;
+pub const IRQ_FC = 0x10;
+pub const IRQ_FD = 0x20;
+pub const IRQ_FE = 0x40;
+pub const IRQ_FF = 0x80;
+
+// ---------------------------------------------------------------------------
+// IRQ clear bits (PORT_IRQ_CLEAR / 0x90) — reversed bit order
+// ---------------------------------------------------------------------------
+
+pub const IRQCLR_FF = 0x01;
+pub const IRQCLR_FE = 0x02;
+pub const IRQCLR_FD = 0x04;
+pub const IRQCLR_FC = 0x08;
+pub const IRQCLR_FB = 0x10;
+pub const IRQCLR_FA = 0x20;
+pub const IRQCLR_F9 = 0x40;
+pub const IRQCLR_F8 = 0x80;
+
+// ---------------------------------------------------------------------------
+// System status bits (PORT_STATUS / 0xA0) — active-high unless noted
+// ---------------------------------------------------------------------------
+
+pub const STATUS_CENTRONICS_BUSY = 0x02;  // Centronics BUSY signal
+pub const STATUS_BATT_CR2032     = 0x04;  // CR2032 backup battery low
+pub const STATUS_BATT_MAIN       = 0x08;  // main battery low
+pub const STATUS_BATT_PCMCIA     = 0x10;  // PCMCIA battery low (inverted)
+pub const STATUS_PCMCIA_WP       = 0x40;  // PCMCIA card write-protected
+pub const STATUS_PCMCIA_ABSENT   = 0x80;  // PCMCIA card not inserted
+
+// ---------------------------------------------------------------------------
+// Buzzer enable values (PORT_BUZZER_EN / 0x52)
+// ---------------------------------------------------------------------------
+
+pub const BUZZER_ON  = 0x7F;
+pub const BUZZER_OFF = 0xFF;
+
+// ---------------------------------------------------------------------------
+// Keyboard sequencer values (PORT_KBD_SEQ / 0x61)
+// ---------------------------------------------------------------------------
+
+pub const KBD_SEQ_RESET = 0xFE;  // pulse 0xFE then 0xFF to reset scanning
+pub const KBD_SEQ_RUN   = 0xFF;  // second half of reset pulse / run
+pub const KBD_SEQ_IDLE  = 0xFE;  // hold to stop scanning
+
+// ---------------------------------------------------------------------------
+// Interrupt vectors (installed into spine / IVT by drivers)
+// ---------------------------------------------------------------------------
+
+pub const INT_F8 = 0xF8;  // power management / timer wake
+pub const INT_F9 = 0xF9;  // one-shot timer (PORT_TIMER)
+pub const INT_FA = 0xFA;  // keyboard scan cycle
+pub const INT_FB = 0xFB;  // keyboard row scan
+pub const INT_FC = 0xFC;  // USART receive
+pub const INT_FD = 0xFD;  // USART transmit ready
+pub const INT_FE = 0xFE;  // Centronics ACK
+pub const INT_FF = 0xFF;  // power / warm wake / diagnostic

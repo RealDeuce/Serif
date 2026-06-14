@@ -1,0 +1,11 @@
+# Nib build artifacts
+*.nir
+*.nif
+*.asm
+*.bin
+*.map
+*.dbg
+
+# Editor backup files
+*~
+*.swp

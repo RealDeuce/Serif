@@ -1,0 +1,57 @@
+// buzzer.nib — Tone generator driver
+//
+// Controls the gate array's buzzer hardware via ports 0x50–0x52.
+// The tone frequency is set by a 16-bit divisor written as two
+// bytes (low, high). The buzzer is enabled/disabled separately.
+//
+// No IRQs — purely output-driven.
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const BUZZER_TONE = 0x00;  // set tone divisor (AX = divisor)
+pub const BUZZER_ON   = 0x04;  // enable buzzer output
+pub const BUZZER_OFF  = 0x08;  // disable buzzer output
+
+const BUZZER_API_SIZE = 0x0C;  // 3 entries × 4 bytes
+const BUZZER_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+fn tone(divisor: u16 in AX) clobbers(FLAGS) {
+    port_out(PORT_BUZZER_LO, AL);
+    port_out(PORT_BUZZER_HI, AH);
+}
+
+fn on() clobbers(AX, FLAGS) {
+    port_out(PORT_BUZZER_EN, BUZZER_ON);
+}
+
+fn off() clobbers(AX, FLAGS) {
+    port_out(PORT_BUZZER_EN, BUZZER_OFF);
+}
+
+// ---------------------------------------------------------------------------
+// Jump table (must follow function definitions)
+// ---------------------------------------------------------------------------
+
+pub far[3] buzzer_table = {&tone, &on, &off};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn buzzer_init() {
+    // Silence buzzer
+    port_out(PORT_BUZZER_EN, BUZZER_OFF);
+
+    // Register with service locator
+    register(DEV_BUZZER, BUZZER_VERSION, &buzzer_table, BUZZER_API_SIZE);
+}

@@ -1,0 +1,7 @@
+# Serif OS build configuration
+root    src/reset.nib
+output  serif.bin
+
+nib
+asm     -d serif.dbg -m serif.map
+bind

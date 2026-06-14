@@ -1,0 +1,80 @@
+// fdc.nib — N82077AA Floppy Disk Controller constants (T200/T500 only)
+//
+// Standard PC-compatible FDC at ports 0xE0–0xE7, operated in
+// non-DMA (polled) mode. Supports 3.5" 1.44 MB HD media.
+
+// ---------------------------------------------------------------------------
+// I/O ports
+// ---------------------------------------------------------------------------
+
+pub const PORT_FDC_SRA  = 0xE0;  // R: status register A
+pub const PORT_FDC_SRB  = 0xE1;  // R: status register B
+pub const PORT_FDC_DOR  = 0xE2;  // R/W: digital output register
+pub const PORT_FDC_MSR  = 0xE4;  // R: main status register
+pub const PORT_FDC_FIFO = 0xE5;  // R/W: data FIFO (commands, results, sector data)
+pub const PORT_FDC_CCR  = 0xE7;  // W: configuration control register
+
+// ---------------------------------------------------------------------------
+// Main status register bits (PORT_FDC_MSR read)
+// ---------------------------------------------------------------------------
+
+pub const MSR_RQM = 0x80;  // request for master — ready for CPU transfer
+pub const MSR_DIO = 0x40;  // data direction: 1 = FDC→CPU, 0 = CPU→FDC
+pub const MSR_NDM = 0x20;  // non-DMA mode active
+pub const MSR_CB  = 0x10;  // command busy
+pub const MSR_DB  = 0x0F;  // drive busy flags (bits 3:0)
+
+// Composite MSR values by phase
+pub const MSR_CMD_READY  = 0x80;  // command phase: ready for new command
+pub const MSR_READ_DATA  = 0xF0;  // execution phase: read data available
+pub const MSR_WRITE_DATA = 0xB0;  // execution phase: write data expected
+pub const MSR_RESULT     = 0xD0;  // result phase: result bytes available
+
+// ---------------------------------------------------------------------------
+// Digital output register bits (PORT_FDC_DOR)
+// ---------------------------------------------------------------------------
+
+pub const DOR_MOTOR0 = 0x10;  // drive 0 motor enable
+pub const DOR_MOTOR1 = 0x20;  // drive 1 motor enable
+pub const DOR_MOTOR2 = 0x40;  // drive 2 motor enable
+pub const DOR_MOTOR3 = 0x80;  // drive 3 motor enable
+pub const DOR_DMA_EN = 0x08;  // DMA/interrupt enable
+pub const DOR_RESET  = 0x04;  // reset control (0 = reset, 1 = normal)
+pub const DOR_SEL    = 0x03;  // drive select mask (bits 1:0)
+
+// ---------------------------------------------------------------------------
+// Command bytes (written to PORT_FDC_FIFO)
+// ---------------------------------------------------------------------------
+
+pub const FDC_SPECIFY      = 0x03;  // 3 bytes: set step rate, head timing
+pub const FDC_SENSE_DRV    = 0x04;  // 2 bytes: read drive status
+pub const FDC_WRITE        = 0x05;  // 9 bytes: write sector data
+pub const FDC_READ         = 0x06;  // 9 bytes: read sector data
+pub const FDC_RECALIBRATE  = 0x07;  // 2 bytes: seek to track 0
+pub const FDC_SENSE_INT    = 0x08;  // 1 byte:  read interrupt status
+pub const FDC_READ_ID      = 0x0A;  // 2 bytes: read sector ID field
+pub const FDC_READ_DEL     = 0x0C;  // 9 bytes: read deleted data
+pub const FDC_FORMAT       = 0x0D;  // 6 bytes: format track
+pub const FDC_SEEK         = 0x0F;  // 3 bytes: seek to cylinder
+pub const FDC_PERPENDICULAR = 0x12;  // 2 bytes: perpendicular mode
+pub const FDC_CONFIGURE    = 0x13;  // 4 bytes: set controller options
+
+// ---------------------------------------------------------------------------
+// Sector size codes (N field in read/write/format commands)
+//
+// Sector size = 128 << N bytes.
+// ---------------------------------------------------------------------------
+
+pub const FDC_SIZE_128  = 0x00;
+pub const FDC_SIZE_256  = 0x01;
+pub const FDC_SIZE_512  = 0x02;  // standard for 1.44 MB
+pub const FDC_SIZE_1024 = 0x03;
+
+// ---------------------------------------------------------------------------
+// 1.44 MB HD disk geometry
+// ---------------------------------------------------------------------------
+
+pub const FDC_HEADS       =    2;
+pub const FDC_CYLINDERS   =   80;
+pub const FDC_SECTORS     =   18;  // sectors per track
+pub const FDC_SECTOR_SIZE =  512;  // bytes per sector

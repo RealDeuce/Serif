@@ -1,0 +1,82 @@
+// lookup.nib — Service locator (INT 0x21)
+//
+// The sole software interrupt in Serif's public API. Applications
+// call INT 0x21 with a device ID and version to obtain a far
+// pointer to that driver's jump table.
+//
+// Drivers call register() during init to add themselves.
+
+use "spine.nif";
+
+// ---------------------------------------------------------------------------
+// Registry state — parallel arrays, one slot per driver
+// ---------------------------------------------------------------------------
+
+u8[16]  reg_ids;
+u8[16]  reg_versions;
+far[16] reg_tables;
+u16[16] reg_sizes;
+u8 reg_count;
+
+// ---------------------------------------------------------------------------
+// INT 0x21 handler
+//
+//   in:  AH = device ID
+//        AL = API version
+//   out: CF=0, ES:BX = jump table pointer (success)
+//        CF=1, AH = error code (failure)
+// ---------------------------------------------------------------------------
+
+fn interrupt(0x21) lookup_handler() {
+    u8 dev_id = AH;
+    u8 dev_ver = AL;
+    u8 found = 0;
+    u16 i = 0;
+
+    while (i < zero_extend(reg_count)) {
+        if (reg_ids[i] == dev_id) {
+            found := 1;
+            if (reg_versions[i] == dev_ver) {
+                far tbl = reg_tables[i];
+                ES := tbl`seg;
+                u16 BX = tbl`off;
+                CF := 0;
+                return;
+            }
+        }
+        i := i + 1;
+    }
+
+    if (found != 0) {
+        u8 AH = ERR_NO_VERSION;
+    } else {
+        u8 AH = ERR_NO_DEVICE;
+    }
+    CF := 1;
+}
+
+// ---------------------------------------------------------------------------
+// Registration — called by driver init
+// ---------------------------------------------------------------------------
+
+pub fn register(id: u8, ver: u8, table: far, size: u16) {
+    if (reg_count >= MAX_DRIVERS) {
+        return;
+    }
+    u16 idx = zero_extend(reg_count);
+    reg_ids[idx] := id;
+    reg_versions[idx] := ver;
+    reg_tables[idx] := table;
+    reg_sizes[idx] := size;
+    reg_count := reg_count + 1;
+}
+
+// ---------------------------------------------------------------------------
+// Init — installs INT 0x21 into the IVT
+// ---------------------------------------------------------------------------
+
+pub fn lookup_init() {
+    reg_count := 0;
+    // The interrupt(0x21) declaration causes the binder to
+    // install lookup_handler at IVT vector 0x21.
+}

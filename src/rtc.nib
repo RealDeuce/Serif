@@ -1,0 +1,106 @@
+// rtc.nib — TC8521AP / RP5C01 Real-Time Clock constants
+//
+// 4-bit register interface at ports 0xD0–0xDF. Only the low nibble
+// of each port is meaningful. The register set is paged: the MODE
+// register selects between time, alarm, and battery-backed RAM.
+
+// ---------------------------------------------------------------------------
+// I/O ports — time/date registers (page 0)
+// ---------------------------------------------------------------------------
+
+pub const PORT_RTC_SEC1    = 0xD0;  // R/W: seconds ones (0–9)
+pub const PORT_RTC_SEC10   = 0xD1;  // R/W: seconds tens (0–5)
+pub const PORT_RTC_MIN1    = 0xD2;  // R/W: minutes ones (0–9)
+pub const PORT_RTC_MIN10   = 0xD3;  // R/W: minutes tens (0–5)
+pub const PORT_RTC_HOUR1   = 0xD4;  // R/W: hours ones (0–9)
+pub const PORT_RTC_HOUR10  = 0xD5;  // R/W: hours tens (0–2)
+pub const PORT_RTC_WDAY    = 0xD6;  // R/W: day of week (0–6, 0=Sunday)
+pub const PORT_RTC_DAY1    = 0xD7;  // R/W: day ones (1–9)
+pub const PORT_RTC_DAY10   = 0xD8;  // R/W: day tens (0–3)
+pub const PORT_RTC_MON1    = 0xD9;  // R/W: month ones (1–9)
+pub const PORT_RTC_MON10   = 0xDA;  // R/W: month tens (0–1)
+pub const PORT_RTC_YEAR1   = 0xDB;  // R/W: year ones (0–9)
+pub const PORT_RTC_YEAR10  = 0xDC;  // R/W: year tens (0–9)
+
+// Control registers (all pages)
+pub const PORT_RTC_MODE    = 0xDD;  // R/W: page select, timer/alarm enable
+pub const PORT_RTC_TEST    = 0xDE;  // W: test register (write 0 for normal)
+pub const PORT_RTC_RESET   = 0xDF;  // W: alarm/timer reset, clock output
+
+// ---------------------------------------------------------------------------
+// Register indices (for array-style access)
+// ---------------------------------------------------------------------------
+
+pub const RTC_SEC1   =  0;
+pub const RTC_SEC10  =  1;
+pub const RTC_MIN1   =  2;
+pub const RTC_MIN10  =  3;
+pub const RTC_HOUR1  =  4;
+pub const RTC_HOUR10 =  5;
+pub const RTC_WDAY   =  6;
+pub const RTC_DAY1   =  7;
+pub const RTC_DAY10  =  8;
+pub const RTC_MON1   =  9;
+pub const RTC_MON10  = 10;
+pub const RTC_YEAR1  = 11;
+pub const RTC_YEAR10 = 12;
+
+pub const RTC_NUM_REGS = 13;
+
+// ---------------------------------------------------------------------------
+// Data mask
+// ---------------------------------------------------------------------------
+
+pub const RTC_NIBBLE = 0x0F;
+
+// ---------------------------------------------------------------------------
+// Write masks per register (page 0: time, page 1: alarm)
+//
+// Only the bits within the mask are writable; remaining bits are
+// reserved or read-only.
+// ---------------------------------------------------------------------------
+
+// Page 0 write masks:  F,7,F,7,F,3,7,F,3,F,1,F,F
+// Page 1 write masks:  0,0,F,3,F,3,0,0,0,0,1,3,0
+
+// ---------------------------------------------------------------------------
+// Mode register bits (PORT_RTC_MODE / 0xDD)
+// ---------------------------------------------------------------------------
+
+pub const RTC_PAGE_MASK  = 0x03;  // bits 1:0 — page select
+pub const RTC_ALARM_EN   = 0x04;  // bit 2 — alarm output enable
+pub const RTC_TIMER_EN   = 0x08;  // bit 3 — timer enable (counting)
+
+// ---------------------------------------------------------------------------
+// Page values (MODE register bits 1:0)
+// ---------------------------------------------------------------------------
+
+pub const RTC_PAGE_TIME   = 0x00;  // page 0: time/date registers
+pub const RTC_PAGE_ALARM  = 0x01;  // page 1: alarm + leap year
+pub const RTC_PAGE_RAM_LO = 0x02;  // page 2: RAM low nibbles
+pub const RTC_PAGE_RAM_HI = 0x03;  // page 3: RAM high nibbles
+
+// ---------------------------------------------------------------------------
+// Reset register bits (PORT_RTC_RESET / 0xDF)
+// ---------------------------------------------------------------------------
+
+pub const RTC_RST_ALARM    = 0x01;  // bit 0: reset alarm registers
+pub const RTC_RST_TIMER    = 0x02;  // bit 1: reset 1 Hz divider
+pub const RTC_RST_16HZ_OFF = 0x04;  // bit 2: disable 16 Hz output on -ALARM
+pub const RTC_RST_1HZ_OFF  = 0x08;  // bit 3: disable 1 Hz output on -ALARM
+
+// ---------------------------------------------------------------------------
+// Alarm register offsets (page 1)
+//
+// When RTC_PAGE_ALARM is selected, ports 0xD0–0xDC map to the alarm
+// comparator registers instead of the time counters.
+// ---------------------------------------------------------------------------
+
+pub const RTC_ALARM_MIN1   = 0xD0;  // alarm minutes ones
+pub const RTC_ALARM_MIN10  = 0xD1;  // alarm minutes tens
+pub const RTC_ALARM_HOUR1  = 0xD2;  // alarm hours ones
+pub const RTC_ALARM_HOUR10 = 0xD3;  // alarm hours tens
+pub const RTC_ALARM_DAY1   = 0xD4;  // alarm day ones
+pub const RTC_ALARM_DAY10  = 0xD5;  // alarm day tens
+pub const RTC_ALARM_WDAY   = 0xD6;  // alarm day of week
+pub const RTC_LEAP_YEAR    = 0xDB;  // leap year counter (0–3, page 1)

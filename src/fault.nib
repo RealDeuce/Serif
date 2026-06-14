@@ -1,0 +1,12 @@
+// fault.nib — Default fault handler
+//
+// Every IVT entry points here until a driver installs its own
+// handler. Also serves as the BOUND (INT 5) exception handler.
+// Halts the CPU in an infinite loop — visible on the hardware
+// monitor but prevents execution from continuing into garbage.
+
+pub fn interrupt(0x05) fault() {
+top:
+    halt();
+    goto top;
+}

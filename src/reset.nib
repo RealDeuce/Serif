@@ -1,0 +1,95 @@
+// reset.nib — Reset vector and boot sequence
+//
+// The CPU begins execution at FFFF:0000 after reset. This module
+// sets up the machine and calls driver inits in dependency order.
+// Everything is laid out in source order from E000:0000 (bank 7).
+
+at(0xE000:0x0000);
+
+use "platform.nif";
+use "spine.nif";
+use "fault.nif";
+use "lookup.nif";
+use "buzzer.nif";
+use "parallel.nif";
+use "power.nif";
+use "lcd.nif";
+
+// ---------------------------------------------------------------------------
+// Memory layout constants (T400 target)
+// ---------------------------------------------------------------------------
+
+// TODO: LCD buffer size is model-dependent. Needs compile-time
+// target selection once Nib supports it. T200/T500 would use
+// LCD_BUF_SIZE = 0x2000 and STACK_TOP = 0x4FA0.
+const LCD_BUF_START = 0x1000;
+const LCD_BUF_SIZE  = 0x1000;  // 64 rows × 64 bytes (T400)
+const STACK_SIZE    = 8096;
+const STACK_TOP     = 0x3FA0;  // LCD_BUF_START + LCD_BUF_SIZE + STACK_SIZE
+
+// Bank register values
+const BANK_RAM0 = 0x10;  // RAM page 0
+const BANK_RAM1 = 0x11;  // RAM page 1
+const BANK_ROM0 = 0x00;  // ROM bank 0 (high, contains reset vector)
+const BANK_ROM1 = 0x01;  // ROM bank 1
+
+// IVT at physical address 0000:0000
+far[256] ivt at(0x0000:0x0000);
+end at;
+
+// ---------------------------------------------------------------------------
+// Boot sequence
+// ---------------------------------------------------------------------------
+
+fn boot() {
+    // 1. Segments and stack
+    SS := 0x0000;
+    SP := STACK_TOP;
+    DS := 0x0000;
+    ES := 0x0000;
+
+    // 2. Memory bank configuration — RAM at bottom, ROM at top
+    port_out(PORT_BANK0, BANK_RAM0);
+    port_out(PORT_BANK1, BANK_RAM1);
+    port_out(PORT_BANK6, BANK_ROM1);
+    port_out(PORT_BANK7, BANK_ROM0);
+
+    // 3. Mask all IRQs and clear pending sources
+    port_out(PORT_IRQ_MASK, 0xFF);
+    port_out(PORT_IRQ_CLEAR, 0xFF);
+
+    // 4. Clear PC Card wait state
+    port_out(PORT_CARD_WAIT, 0x80);
+
+    // 5. Fill all 256 IVT entries with the fault handler
+    far fault_addr = &fault;
+    for (CX in 256..0) {
+        ivt[CX - 1] := fault_addr;
+    }
+
+    // 6. Install service locator
+    lookup_init();
+
+    // 7. Driver init — dependency order
+    lcd_init();       // display first — needed for debug output
+    buzzer_init();
+    parallel_init();
+    power_init();
+
+    // 8. Enable interrupts
+    IF := 1;
+
+    // TODO: Jump to main application / shell entry point
+top:
+    halt();
+    goto top;
+}
+
+// ---------------------------------------------------------------------------
+// Reset vector — CPU entry point
+// ---------------------------------------------------------------------------
+
+fn at(0xFFFF:0x0000) reset() {
+    IF := 0;
+    goto boot;
+}

@@ -1,0 +1,79 @@
+// spine.nib — Service locator and driver dispatch infrastructure
+//
+// The spine is the IVT at 0000:0000. INT 0x21 is the sole software
+// interrupt in Serif's public API: it maps a device ID + version to
+// a far pointer to that driver's jump table.
+//
+// Driver jump tables are dense far[] arrays. Function constants are
+// pre-multiplied byte offsets so the call site is:
+//
+//     bound BX, [table_bounds]    // validate offset (INT 5 on fail)
+//     call far [table + fn]       // one instruction, no math
+//
+
+// ---------------------------------------------------------------------------
+// Service locator interrupt
+// ---------------------------------------------------------------------------
+
+pub const INT_LOOKUP = 0x21;
+
+// INT 0x21 calling convention:
+//
+//   in:   AH = device ID (DEV_*)
+//         AL = requested API version (1-based)
+//   out:  CF = 0  success
+//             ES:BX = far* to driver jump table
+//         CF = 1  failure
+//             AH = error code (ERR_*)
+
+// ---------------------------------------------------------------------------
+// Error codes (returned in AH on CF=1)
+// ---------------------------------------------------------------------------
+
+pub const ERR_NO_DEVICE  = 0x01;  // device ID not registered
+pub const ERR_NO_VERSION = 0x02;  // device exists but version unavailable
+
+// ---------------------------------------------------------------------------
+// Bounds check exception
+// ---------------------------------------------------------------------------
+
+pub const INT_BOUND = 0x05;  // fired by BOUND on out-of-range offset
+
+// ---------------------------------------------------------------------------
+// Device IDs
+// ---------------------------------------------------------------------------
+
+pub const DEV_LCD         = 0x01;  // display driver
+pub const DEV_KBD         = 0x02;  // keyboard driver
+pub const DEV_SERIAL      = 0x03;  // USART / serial port
+pub const DEV_PARALLEL    = 0x04;  // Centronics parallel port
+pub const DEV_STORAGE     = 0x05;  // built-in + PCMCIA + FDC
+pub const DEV_RTC         = 0x06;  // real-time clock / timer
+pub const DEV_BUZZER      = 0x07;  // tone generator
+pub const DEV_POWER       = 0x08;  // power management
+
+// ---------------------------------------------------------------------------
+// Hardware IRQ vectors (installed into IVT by driver init)
+// ---------------------------------------------------------------------------
+
+pub const IRQ_VEC_F8 = 0xF8;  // power management / timer wake
+pub const IRQ_VEC_F9 = 0xF9;  // one-shot timer
+pub const IRQ_VEC_FA = 0xFA;  // keyboard scan cycle
+pub const IRQ_VEC_FB = 0xFB;  // keyboard row scan
+pub const IRQ_VEC_FC = 0xFC;  // USART receive
+pub const IRQ_VEC_FD = 0xFD;  // USART transmit ready
+pub const IRQ_VEC_FE = 0xFE;  // Centronics ACK
+pub const IRQ_VEC_FF = 0xFF;  // power / warm wake
+
+// ---------------------------------------------------------------------------
+// Driver registration (used by driver init, not by applications)
+// ---------------------------------------------------------------------------
+
+// Maximum number of registered drivers
+pub const MAX_DRIVERS = 16;
+
+// Registry entry layout (8 bytes each):
+//   u8   device ID
+//   u8   API version
+//   far  table pointer (4 bytes)
+//   u16  table size in bytes (for BOUND max value)
