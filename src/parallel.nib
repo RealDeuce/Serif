@@ -38,27 +38,26 @@ pub extern fn far write(data: u8 in AL) clobbers(FLAGS) {
     port_out(PORT_CENTRONICS, data);
 
     // Pulse -STB: low then high via control latch
-    u8 ctrl = ctrl_shadow;
+    const u8 ctrl = ctrl_shadow;
     port_out(PORT_CONTROL, ctrl | CTRL_CENTRONICS_STB);
     port_out(PORT_CONTROL, ctrl & ~CTRL_CENTRONICS_STB);
 }
 
 pub extern fn far ready() -> u8 in AL clobbers(FLAGS) {
-    u8 AL = port_in(PORT_STATUS);
-    AL := AL & STATUS_CENTRONICS_BUSY;
-    if (AL != 0) {
-        // BUSY is high — printer is busy
+    const u8 val = port_in(PORT_STATUS) & STATUS_CENTRONICS_BUSY;
+    if (val != 0) {
         CF := 1;
     } else {
         CF := 0;
     }
+    return val;
 }
 
 // ---------------------------------------------------------------------------
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far32[2] parallel_table = {&write, &ready};
+pub far far32[2] parallel_table = {@write, @ready};
 
 // ---------------------------------------------------------------------------
 // Init

@@ -31,8 +31,8 @@ end at;
 // ---------------------------------------------------------------------------
 
 fn interrupt(0x21) lookup_handler() {
-    u8 dev_id = AH;
-    u8 dev_ver = AL;
+    const u8 dev_id = AH;
+    const u8 dev_ver = AL;
     u8 found = 0;
     u16 i = 0;
 
@@ -40,7 +40,7 @@ fn interrupt(0x21) lookup_handler() {
         if (reg_ids[i] == dev_id) {
             found := 1;
             if (reg_versions[i] == dev_ver) {
-                far32 tbl = reg_tables[i];
+                const far32 tbl = reg_tables[i];
                 ES := tbl`seg;
                 u16 BX = tbl`off;
                 CF := 0;
@@ -66,7 +66,7 @@ pub fn register(id: u8, ver: u8, table: far32, size: u16) {
     if (reg_count >= MAX_DRIVERS) {
         return;
     }
-    u16 idx = zero_extend(reg_count);
+    const u16 idx = zero_extend(reg_count);
     reg_ids[idx] := id;
     reg_versions[idx] := ver;
     reg_tables[idx] := table;

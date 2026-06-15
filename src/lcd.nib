@@ -206,10 +206,8 @@ glyph_loop:
 // ---------------------------------------------------------------------------
 
 pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
-    u16 pos = str`off;
-
     while (len > 0) {
-        u8 ch = [str];
+        const u8 ch = [str];
 
         if (ch == 0x0A) {
             cursor_row := cursor_row + 1;
@@ -227,8 +225,8 @@ pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
             buf_idx := buf_idx + zero_extend(cursor_col);
             text_buf[buf_idx] := ch;
 
-            u16 px = zero_extend(cursor_col) * CHAR_W;
-            u8 py = cursor_row * CHAR_H;
+            const u16 px = zero_extend(cursor_col) * CHAR_W;
+            const u8 py = cursor_row * CHAR_H;
             blit_glyph(ch, px, py);
 
             cursor_col := cursor_col + 1;
@@ -300,9 +298,9 @@ pub extern fn far clear() clobbers(FLAGS) {
 // ---------------------------------------------------------------------------
 
 fn toggle_cursor() {
-    u16 px = zero_extend(cursor_col) * CHAR_W;
-    u8 py = cursor_row * CHAR_H;
-    far32 dummy = 0x0000:0x0000;
+    const u16 px = zero_extend(cursor_col) * CHAR_W;
+    const u8 py = cursor_row * CHAR_H;
+    const far32 dummy = 0x0000:0x0000;
     blit(dummy, px, py, BLIT_NOT, CHAR_W, CHAR_H);
 }
 

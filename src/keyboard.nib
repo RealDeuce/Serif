@@ -115,9 +115,9 @@ fn interrupt(0xFA) scan_cycle_handler() {
 
 fn interrupt(0xFB) row_scan_handler() {
     // Read row data
+    const u8 data = port_in(PORT_KBD_ROW);
     u8 row = scan_row;
-    u8 data = port_in(PORT_KBD_ROW);
-    u16 idx = zero_extend(row);
+    const u16 idx = zero_extend(row);
     cur_scan[idx] := data;
 
     // Advance row
@@ -167,7 +167,7 @@ fn process_scan() {
     // Detect newly pressed keys (rising edges)
     u16 row = 0;
     while (row < NUM_ROWS) {
-        u8 changed = cur_scan[row] & ~prev_scan[row];  // newly pressed
+        const u8 changed = cur_scan[row] & ~prev_scan[row];  // newly pressed
         if (changed != 0) {
             // Check each bit
             u8 bit = 0;
@@ -175,7 +175,7 @@ fn process_scan() {
             while (bit < 8) {
                 if ((changed & mask) != 0) {
                     // Key at (row, bit) was just pressed
-                    u16 keyidx = (row << 3) + zero_extend(bit);
+                    const u16 keyidx = (row << 3) + zero_extend(bit);
                     u8 code;
                     if ((mods & MOD_SHIFT) != 0) {
                         code := keymap_shifted[keyidx];
@@ -213,15 +213,15 @@ fn buf_push(key: u8) {
     if (buf_count >= BUF_SIZE) {
         return;  // buffer full, drop key
     }
-    u16 idx = zero_extend(buf_head);
+    const u16 idx = zero_extend(buf_head);
     key_buf[idx] := key;
     buf_head := (buf_head + 1) & BUF_MASK;
     buf_count := buf_count + 1;
 }
 
 fn buf_pop() -> u8 {
-    u16 idx = zero_extend(buf_tail);
-    u8 key = key_buf[idx];
+    const u16 idx = zero_extend(buf_tail);
+    const u8 key = key_buf[idx];
     buf_tail := (buf_tail + 1) & BUF_MASK;
     buf_count := buf_count - 1;
     return key;
@@ -236,7 +236,7 @@ pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
         CF := 1;
         return 0;
     }
-    u8 key = buf_pop();
+    const u8 key = buf_pop();
     CF := 0;
     return key;
 }
@@ -248,7 +248,7 @@ pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
 pub extern fn far wait() -> u8 in AL clobbers(FLAGS) {
 wait_loop:
     if (buf_count != 0) {
-        u8 key = buf_pop();
+        const u8 key = buf_pop();
         CF := 0;
         return key;
     }

@@ -46,8 +46,7 @@ u8[1] char_buf;
 // ---------------------------------------------------------------------------
 
 fn boot() {
-    // 1. Segments, stack, and direction flag
-    DF := 0;
+    // 1. Segments and stack
     SS := 0x0000;
     SP := STACK_TOP;
     DS := 0x0000;
@@ -59,6 +58,12 @@ fn boot() {
     port_out(PORT_BANK6, BANK_ROM1);
     port_out(PORT_BANK7, BANK_ROM0);
 
+    // Const locals — declared early for low BP offsets
+    const far32 fault_addr = @fault;
+    const far32 print_addr = lcd_table[LCD_PRINT];
+    const far32 cursor_addr = lcd_table[LCD_CURSOR];
+    const far32 wait_addr = kbd_table[KBD_WAIT];
+
     // 3. Mask all IRQs and clear pending sources
     port_out(PORT_IRQ_MASK, 0xFF);
     port_out(PORT_IRQ_CLEAR, 0xFF);
@@ -67,7 +72,6 @@ fn boot() {
     port_out(PORT_CARD_WAIT, 0x80);
 
     // 5. Fill all 256 IVT entries with the fault handler
-    far32 fault_addr = @fault;
     for (CX in 256..0) {
         ivt[CX - 1] := fault_addr;
     }
@@ -86,17 +90,14 @@ fn boot() {
     IF := 1;
 
     // 9. Welcome message (indirect call through jump table)
-    far32 print_addr = lcd_table[LCD_PRINT];
     print_addr as print from lcd(@welcome, welcome`len);
 
     // 10. Enable cursor
-    far32 cursor_addr = lcd_table[LCD_CURSOR];
     cursor_addr as cursor from lcd(1);
 
     // 11. Read-eval-print loop
-    far32 wait_addr = kbd_table[KBD_WAIT];
 repl:
-    u8 ch = wait_addr as wait from keyboard();
+    const u8 ch = wait_addr as wait from keyboard();
     char_buf[0] := ch;
     print_addr as print from lcd(@char_buf, 1);
     goto repl;
