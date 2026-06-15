@@ -84,7 +84,7 @@ fn boot() {
 
     // 9. Welcome message (indirect call through jump table)
     far32 print_addr = lcd_table[1];
-    print_addr as print from lcd(@welcome, 17);
+    print_addr as print from lcd(@welcome, welcome`len);
 
     // TODO: Jump to main application / shell entry point
 top:
