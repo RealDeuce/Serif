@@ -20,7 +20,7 @@ const PWR_VERSION  = 1;
 // API functions
 // ---------------------------------------------------------------------------
 
-fn far off() clobbers(FLAGS) {
+pub extern fn far off() clobbers(FLAGS) {
     IF := 0;
     port_out(PORT_POWER, 0x01);
     // CPU halts after the power strobe — loop in case it doesn't

@@ -33,7 +33,7 @@ end at;
 // API functions
 // ---------------------------------------------------------------------------
 
-fn far write(data: u8 in AL) clobbers(FLAGS) {
+pub extern fn far write(data: u8 in AL) clobbers(FLAGS) {
     // Latch data byte
     port_out(PORT_CENTRONICS, data);
 
@@ -43,7 +43,7 @@ fn far write(data: u8 in AL) clobbers(FLAGS) {
     port_out(PORT_CONTROL, ctrl & ~CTRL_CENTRONICS_STB);
 }
 
-fn far ready() -> u8 in AL clobbers(FLAGS) {
+pub extern fn far ready() -> u8 in AL clobbers(FLAGS) {
     u8 AL = port_in(PORT_STATUS);
     AL := AL & STATUS_CENTRONICS_BUSY;
     if (AL != 0) {

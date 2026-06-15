@@ -25,16 +25,16 @@ const BUZZER_VERSION  = 1;
 // API functions
 // ---------------------------------------------------------------------------
 
-fn far tone(divisor: u16 in AX) clobbers(FLAGS) {
+pub extern fn far tone(divisor: u16 in AX) clobbers(FLAGS) {
     port_out(PORT_BUZZER_LO, AL);
     port_out(PORT_BUZZER_HI, AH);
 }
 
-fn far on() clobbers(FLAGS) {
+pub extern fn far on() clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_ON);
 }
 
-fn far off() clobbers(FLAGS) {
+pub extern fn far off() clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_OFF);
 }
 

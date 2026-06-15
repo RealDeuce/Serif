@@ -119,8 +119,8 @@ fn blit_row_not(idx: u16, mask_lo: u8, mask_hi: u8, shift: u8) {
 //   h:   height in pixels
 // ---------------------------------------------------------------------------
 
-fn far blit(src: far in ES:SI, x: u16 in DX, y: u8 in AL,
-            op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
+pub extern fn far blit(src: far in ES:SI, x: u16 in DX, y: u8 in AL,
+                       op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
 
     const u8 shift = (x & 0x07) as (u8);
     const u8 wmask = 0xFF << (8 - w);
@@ -254,7 +254,7 @@ pub extern fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
 // API: cursor — set cursor visibility (0=off, 1=on)
 // ---------------------------------------------------------------------------
 
-fn far cursor(state: u8 in AL) clobbers(FLAGS) {
+pub extern fn far cursor(state: u8 in AL) clobbers(FLAGS) {
     if (state != 0) {
         if (cursor_visible == 0) {
             cursor_visible := 1;
@@ -272,7 +272,7 @@ fn far cursor(state: u8 in AL) clobbers(FLAGS) {
 // API: setpos — set text cursor position
 // ---------------------------------------------------------------------------
 
-fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
+pub extern fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
     if (cursor_visible != 0) {
         toggle_cursor();
     }
@@ -287,7 +287,7 @@ fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
 // API: clear — clear screen and reset cursor
 // ---------------------------------------------------------------------------
 
-fn far clear() clobbers(FLAGS) {
+pub extern fn far clear() clobbers(FLAGS) {
     memset(fb, 0);
     memset(text_buf, 0);
     cursor_col := 0;
