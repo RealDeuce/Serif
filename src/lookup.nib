@@ -12,11 +12,14 @@ use "spine.nif";
 // Registry state — parallel arrays, one slot per driver
 // ---------------------------------------------------------------------------
 
+// RAM globals for driver registry
+at(0x0000:0x0500);
 u8[16]  reg_ids;
 u8[16]  reg_versions;
 far[16] reg_tables;
 u16[16] reg_sizes;
 u8 reg_count;
+end at;
 
 // ---------------------------------------------------------------------------
 // INT 0x21 handler

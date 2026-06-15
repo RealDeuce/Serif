@@ -25,13 +25,15 @@ const PAR_VERSION  = 1;
 // Shadow of PORT_CONTROL — other drivers also use this register,
 // so we must read-modify-write against a shared shadow.
 // TODO: shared control latch shadow needs cross-driver coordination
+at(0x0000:0x0588);
 u8 ctrl_shadow;
+end at;
 
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
 
-fn write(data: u8 in AL) clobbers(AX, DX, FLAGS) {
+fn far write(data: u8 in AL) clobbers(FLAGS) {
     // Latch data byte
     port_out(PORT_CENTRONICS, data);
 
@@ -41,7 +43,7 @@ fn write(data: u8 in AL) clobbers(AX, DX, FLAGS) {
     port_out(PORT_CONTROL, ctrl & ~CTRL_CENTRONICS_STB);
 }
 
-fn ready() -> u8 in AL clobbers(FLAGS) {
+fn far ready() -> u8 in AL clobbers(FLAGS) {
     u8 AL = port_in(PORT_STATUS);
     AL := AL & STATUS_CENTRONICS_BUSY;
     if (AL != 0) {
@@ -70,5 +72,5 @@ pub fn parallel_init() {
     port_out(PORT_CENTRONICS, 0xFF);
 
     // Register with service locator
-    register(DEV_PARALLEL, PAR_VERSION, &parallel_table, PAR_API_SIZE);
+    register(DEV_PARALLEL, PAR_VERSION, @parallel_table, PAR_API_SIZE);
 }

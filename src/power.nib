@@ -20,7 +20,7 @@ const PWR_VERSION  = 1;
 // API functions
 // ---------------------------------------------------------------------------
 
-fn off() clobbers(AX, FLAGS) {
+fn far off() clobbers(FLAGS) {
     IF := 0;
     port_out(PORT_POWER, 0x01);
     // CPU halts after the power strobe — loop in case it doesn't
@@ -33,7 +33,7 @@ top:
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far[1] power_table = {&off};
+pub far[1] power_table = {@off};
 
 // ---------------------------------------------------------------------------
 // Init
@@ -41,7 +41,7 @@ pub far[1] power_table = {&off};
 
 pub fn power_init() {
     // Register with service locator
-    register(DEV_POWER, PWR_VERSION, &power_table, PWR_API_SIZE);
+    register(DEV_POWER, PWR_VERSION, @power_table, PWR_API_SIZE);
 
     // TODO: Install IRQ handlers for vectors F8 (power/timer wake)
     // and FF (power/warm wake) once save/restore is implemented.

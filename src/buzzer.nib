@@ -25,16 +25,16 @@ const BUZZER_VERSION  = 1;
 // API functions
 // ---------------------------------------------------------------------------
 
-fn tone(divisor: u16 in AX) clobbers(FLAGS) {
+fn far tone(divisor: u16 in AX) clobbers(FLAGS) {
     port_out(PORT_BUZZER_LO, AL);
     port_out(PORT_BUZZER_HI, AH);
 }
 
-fn on() clobbers(AX, FLAGS) {
+fn far on() clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_ON);
 }
 
-fn off() clobbers(AX, FLAGS) {
+fn far off() clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_OFF);
 }
 
@@ -42,7 +42,7 @@ fn off() clobbers(AX, FLAGS) {
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far[3] buzzer_table = {&tone, &on, &off};
+pub far[3] buzzer_table = {@tone, @on, @off};
 
 // ---------------------------------------------------------------------------
 // Init
@@ -53,5 +53,5 @@ pub fn buzzer_init() {
     port_out(PORT_BUZZER_EN, BUZZER_OFF);
 
     // Register with service locator
-    register(DEV_BUZZER, BUZZER_VERSION, &buzzer_table, BUZZER_API_SIZE);
+    register(DEV_BUZZER, BUZZER_VERSION, @buzzer_table, BUZZER_API_SIZE);
 }

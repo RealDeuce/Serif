@@ -1,7 +1,7 @@
 // lcd.nib — LCD display driver
 //
-// 480×64 pixel monochrome LCD. Framebuffer at 0x1000 (4KB).
-// Text console: 80 columns × 8 rows using 6×8 pixel characters.
+// 480x64 pixel monochrome LCD. Framebuffer at 0x1000 (4KB).
+// Text console: 80 columns x 8 rows using 6x8 pixel characters.
 
 use "platform.nif";
 use "spine.nif";
@@ -44,7 +44,6 @@ const TEXT_COLS    = 80;
 const TEXT_ROWS    = 8;
 const CHAR_W       = 6;
 const CHAR_H       = 8;
-const GLYPH_BYTES  = 8;
 
 // ---------------------------------------------------------------------------
 // Framebuffer and state
@@ -52,18 +51,16 @@ const GLYPH_BYTES  = 8;
 
 u8[4096] fb at(0x0000:0x1000);
 end at;
+// RAM globals — must be placed explicitly or they end up in ROM
+at(0x0000:0x0400);
 u8[640] text_buf;
 u8 cursor_col;
 u8 cursor_row;
 u8 cursor_visible;
+end at;
 
 // ---------------------------------------------------------------------------
-// Blit helpers — one per operation, using array access on fb[]
-//
-// idx: byte offset into framebuffer
-// src_lo/src_hi: source byte shifted into first/second byte positions
-// mask_lo/mask_hi: which bits in each dest byte are affected
-// shift: bit shift amount (0 = byte-aligned, no second byte needed)
+// Blit helpers — one per operation
 // ---------------------------------------------------------------------------
 
 fn blit_row_copy(idx: u16, src_lo: u8, src_hi: u8,
@@ -112,28 +109,27 @@ fn blit_row_not(idx: u16, mask_lo: u8, mask_hi: u8, shift: u8) {
 }
 
 // ---------------------------------------------------------------------------
-// blit — render sprite to framebuffer
+// API: blit — render sprite to framebuffer
+//
+//   src: far pointer to bitmap data (1 byte per row, MSB-first)
+//   x:   pixel X position (0-479)
+//   y:   pixel Y position (0-63)
+//   op:  blit operation (BLIT_*)
+//   w:   width in pixels (1-8)
+//   h:   height in pixels
 // ---------------------------------------------------------------------------
 
-fn blit(src_seg: seg, src_off: u16, x: u16, y: u8,
-        op: u8, w: u8, h: u8) {
+fn far blit(src: far in ES:SI, x: u16 in DX, y: u8 in AL,
+            op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
 
-    // Byte offset into fb: y * 64 + x / 8
     u16 idx = (zero_extend(y) << 6) + (x >> 3);
-
-    // Bit shift for sub-byte alignment
     u8 shift = (x & 0x07) as (u8);
-
-    // Width mask: w bits set from MSB
     u8 wmask = 0xFF << (8 - w);
-
-    // Pre-compute shifted masks
     u8 mask_lo = wmask >> shift;
     u8 rshift = 8 - shift;
     u8 mask_hi = wmask << rshift;
 
-    ES := src_seg;
-    u16 src = src_off;
+    u16 src_off = src`off;
 
     u8 rows_left = h;
 row_loop:
@@ -141,16 +137,12 @@ row_loop:
         return;
     }
 
-    // Read source byte, mask to width
-    SI := src;
+    SI := src_off;
     u8 sbyte = [ES:SI];
     sbyte := sbyte & wmask;
-
-    // Shift source into position
     u8 src_lo = sbyte >> shift;
     u8 src_hi = sbyte << rshift;
 
-    // Dispatch to per-operation helper
     if (op == BLIT_COPY) {
         blit_row_copy(idx, src_lo, src_hi, mask_lo, mask_hi, shift);
     } else if (op == BLIT_COPY_INV) {
@@ -165,7 +157,7 @@ row_loop:
         blit_row_not(idx, mask_lo, mask_hi, shift);
     }
 
-    src := src + 1;
+    src_off := src_off + 1;
     idx := idx + FB_STRIDE;
     rows_left := rows_left - 1;
     goto row_loop;
@@ -175,22 +167,54 @@ row_loop:
 // Internal: blit a glyph from font_data
 // ---------------------------------------------------------------------------
 
-fn blit_glyph(ch: u8, px: u16, py: u8, op: u8) {
-    u16 glyph_off = zero_extend(ch) << 3;
-    glyph_off := glyph_off + &font_data;
-    blit(DS, glyph_off, px, py, op, CHAR_W, CHAR_H);
+// Direct glyph renderer — COPY only, 6x8, avoids far pointer
+// construction since font_data is in our own code segment.
+fn blit_glyph(ch: u8, px: u16, py: u8) {
+    u16 src_off = (zero_extend(ch) << 3) + &font_data;
+    u16 idx = (zero_extend(py) << 6) + (px >> 3);
+    u8 shift = (px & 0x07) as (u8);
+    u8 rshift = 8 - shift;
+    u8 wmask = 0xFC;  // 6 bits set from MSB
+    u8 mask_lo = wmask >> shift;
+    u8 mask_hi = wmask << rshift;
+
+    u8 row = 0;
+glyph_loop:
+    if (row >= CHAR_H) {
+        return;
+    }
+
+    // Read glyph byte from code segment
+    ES := CS;
+    SI := src_off;
+    u8 sbyte = [ES:SI] & wmask;
+    u8 src_lo = sbyte >> shift;
+    u8 src_hi = sbyte << rshift;
+
+    fb[idx] := (fb[idx] & ~mask_lo) | src_lo;
+    if (shift != 0) {
+        fb[idx + 1] := (fb[idx + 1] & ~mask_hi) | src_hi;
+    }
+
+    src_off := src_off + 1;
+    idx := idx + FB_STRIDE;
+    row := row + 1;
+    goto glyph_loop;
 }
 
 // ---------------------------------------------------------------------------
-// print — render string at cursor position
+// API: print — render string at cursor position
+//
+//   str: far pointer to string data
+//   len: byte count
 // ---------------------------------------------------------------------------
 
-fn print(str_seg: seg, str_off: u16, len: u16) {
-    u16 pos = str_off;
+fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
+    u16 pos = str`off;
     u16 remaining = len;
 
     while (remaining > 0) {
-        ES := str_seg;
+        ES := str`seg;
         SI := pos;
         u8 ch = [ES:SI];
 
@@ -212,7 +236,7 @@ fn print(str_seg: seg, str_off: u16, len: u16) {
 
             u16 px = zero_extend(cursor_col) * CHAR_W;
             u8 py = cursor_row * CHAR_H;
-            blit_glyph(ch, px, py, BLIT_COPY);
+            blit_glyph(ch, px, py);
 
             cursor_col := cursor_col + 1;
             if (cursor_col >= TEXT_COLS) {
@@ -234,10 +258,10 @@ fn print(str_seg: seg, str_off: u16, len: u16) {
 }
 
 // ---------------------------------------------------------------------------
-// cursor — set cursor visibility (0=off, 1=on)
+// API: cursor — set cursor visibility (0=off, 1=on)
 // ---------------------------------------------------------------------------
 
-fn cursor(state: u8) {
+fn far cursor(state: u8 in AL) clobbers(FLAGS) {
     if (state != 0) {
         if (cursor_visible == 0) {
             cursor_visible := 1;
@@ -252,10 +276,10 @@ fn cursor(state: u8) {
 }
 
 // ---------------------------------------------------------------------------
-// setpos — set text cursor position
+// API: setpos — set text cursor position
 // ---------------------------------------------------------------------------
 
-fn setpos(col: u8, row: u8) {
+fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
     if (cursor_visible != 0) {
         toggle_cursor();
     }
@@ -267,10 +291,10 @@ fn setpos(col: u8, row: u8) {
 }
 
 // ---------------------------------------------------------------------------
-// clear — clear screen and reset cursor
+// API: clear — clear screen and reset cursor
 // ---------------------------------------------------------------------------
 
-fn clear() {
+fn far clear() clobbers(FLAGS) {
     memset(fb, 0);
     memset(text_buf, 0);
     cursor_col := 0;
@@ -285,21 +309,25 @@ fn clear() {
 fn toggle_cursor() {
     u16 px = zero_extend(cursor_col) * CHAR_W;
     u8 py = cursor_row * CHAR_H;
-    blit(0, 0, px, py, BLIT_NOT, CHAR_W, CHAR_H);
+    far dummy = 0x0000:0x0000;
+    blit(dummy, px, py, BLIT_NOT, CHAR_W, CHAR_H);
 }
 
 // ---------------------------------------------------------------------------
 // Jump table
 // ---------------------------------------------------------------------------
 
-pub far[5] lcd_table = {&blit, &print, &cursor, &setpos, &clear};
+pub far[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
+u8[] welcome = "Welcome to Serif!";
+
 pub fn lcd_init() {
     port_out(PORT_LCD_BASE, LCD_BASE_VAL);
     clear();
-    register(DEV_LCD, LCD_VERSION, &lcd_table, LCD_API_SIZE);
+    register(DEV_LCD, LCD_VERSION, @lcd_table, LCD_API_SIZE);
+    print(@welcome, 17);
 }
