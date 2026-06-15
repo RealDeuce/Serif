@@ -37,6 +37,7 @@ const BANK_ROM1 = 0x01;  // ROM bank 1
 far[256] ivt at(0x0000:0x0000);
 end at;
 
+u8[] welcome = "Welcome to Serif!";
 
 // ---------------------------------------------------------------------------
 // Boot sequence
@@ -80,6 +81,10 @@ fn boot() {
 
     // 8. Enable interrupts
     IF := 1;
+
+    // 9. Welcome message (indirect call through jump table)
+    far print_addr = lcd_table[1];
+    print_addr as print from lcd(@welcome, 17);
 
     // TODO: Jump to main application / shell entry point
 top:

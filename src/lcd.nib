@@ -205,7 +205,7 @@ glyph_loop:
 //   len: byte count
 // ---------------------------------------------------------------------------
 
-fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
+pub extern fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
     u16 pos = str`off;
 
     while (len > 0) {
@@ -310,17 +310,14 @@ fn toggle_cursor() {
 // Jump table
 // ---------------------------------------------------------------------------
 
-pub far[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
+pub far far[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
-u8[] welcome = "Welcome to Serif!";
-
 pub fn lcd_init() {
     port_out(PORT_LCD_BASE, LCD_BASE_VAL);
     clear();
     register(DEV_LCD, LCD_VERSION, @lcd_table, LCD_API_SIZE);
-    print(@welcome, 17);
 }
