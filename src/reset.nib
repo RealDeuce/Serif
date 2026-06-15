@@ -43,7 +43,8 @@ end at;
 // ---------------------------------------------------------------------------
 
 fn boot() {
-    // 1. Segments and stack
+    // 1. Segments, stack, and direction flag
+    DF := 0;
     SS := 0x0000;
     SP := STACK_TOP;
     DS := 0x0000;
