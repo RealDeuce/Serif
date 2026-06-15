@@ -39,6 +39,7 @@ far32[256] ivt at(0x0000:0x0000);
 end at;
 
 u8[] welcome = "Welcome to Serif!";
+u8[1] char_buf;
 
 // ---------------------------------------------------------------------------
 // Boot sequence
@@ -88,10 +89,17 @@ fn boot() {
     far32 print_addr = lcd_table[1];
     print_addr as print from lcd(@welcome, welcome`len);
 
-    // TODO: Jump to main application / shell entry point
-top:
-    halt();
-    goto top;
+    // 10. Enable cursor
+    far32 cursor_addr = lcd_table[2];
+    cursor_addr as cursor from lcd(1);
+
+    // 11. Read-eval-print loop
+    far32 wait_addr = kbd_table[1];
+repl:
+    u8 ch = wait_addr as wait from keyboard();
+    char_buf[0] := ch;
+    print_addr as print from lcd(@char_buf, 1);
+    goto repl;
 }
 
 // ---------------------------------------------------------------------------
