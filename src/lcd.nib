@@ -12,11 +12,11 @@ use "font.nif";
 // API function offsets (pre-multiplied)
 // ---------------------------------------------------------------------------
 
-pub const LCD_BLIT   = 0x00;
-pub const LCD_PRINT  = 0x04;
-pub const LCD_CURSOR = 0x08;
-pub const LCD_SETPOS = 0x0C;
-pub const LCD_CLEAR  = 0x10;
+pub const LCD_BLIT   = 0;
+pub const LCD_PRINT  = 1;
+pub const LCD_CURSOR = 2;
+pub const LCD_SETPOS = 3;
+pub const LCD_CLEAR  = 4;
 
 const LCD_API_SIZE = 0x14;
 const LCD_VERSION  = 1;

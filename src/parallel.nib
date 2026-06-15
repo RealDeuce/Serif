@@ -12,8 +12,8 @@ use "lookup.nif";
 // API function offsets (pre-multiplied)
 // ---------------------------------------------------------------------------
 
-pub const PAR_WRITE = 0x00;  // write byte (AL = data)
-pub const PAR_READY = 0x04;  // check ready (CF=0 ready, CF=1 busy)
+pub const PAR_WRITE = 0;  // write byte (AL = data)
+pub const PAR_READY = 1;  // check ready (CF=0 ready, CF=1 busy)
 
 const PAR_API_SIZE = 0x08;  // 2 entries × 4 bytes
 const PAR_VERSION  = 1;

@@ -11,7 +11,7 @@ use "lookup.nif";
 // API function offsets (pre-multiplied)
 // ---------------------------------------------------------------------------
 
-pub const PWR_OFF = 0x00;  // power off the system
+pub const PWR_OFF = 0;  // power off the system
 
 const PWR_API_SIZE = 0x04;  // 1 entry × 4 bytes
 const PWR_VERSION  = 1;

@@ -12,9 +12,9 @@ use "lookup.nif";
 // API function offsets (pre-multiplied)
 // ---------------------------------------------------------------------------
 
-pub const KBD_GETKEY = 0x00;  // non-blocking read (CF=0/AL=key or CF=1)
-pub const KBD_WAIT   = 0x04;  // blocking wait (AL=key)
-pub const KBD_STATUS = 0x08;  // modifier state (AL=modifiers)
+pub const KBD_GETKEY = 0;  // non-blocking read (CF=0/AL=key or CF=1)
+pub const KBD_WAIT   = 1;  // blocking wait (AL=key)
+pub const KBD_STATUS = 2;  // modifier state (AL=modifiers)
 
 const KBD_API_SIZE = 0x0C;
 const KBD_VERSION  = 1;

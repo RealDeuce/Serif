@@ -86,15 +86,15 @@ fn boot() {
     IF := 1;
 
     // 9. Welcome message (indirect call through jump table)
-    far32 print_addr = lcd_table[1];
+    far32 print_addr = lcd_table[LCD_PRINT];
     print_addr as print from lcd(@welcome, welcome`len);
 
     // 10. Enable cursor
-    far32 cursor_addr = lcd_table[2];
+    far32 cursor_addr = lcd_table[LCD_CURSOR];
     cursor_addr as cursor from lcd(1);
 
     // 11. Read-eval-print loop
-    far32 wait_addr = kbd_table[1];
+    far32 wait_addr = kbd_table[KBD_WAIT];
 repl:
     u8 ch = wait_addr as wait from keyboard();
     char_buf[0] := ch;
