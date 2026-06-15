@@ -1,0 +1,304 @@
+// keyboard.nib — Keyboard driver
+//
+// IRQ-driven 10x8 matrix keyboard. The gate array scans the matrix
+// and delivers row data via IRQ FA (scan cycle) and IRQ FB (row data).
+// Debounces, translates to ASCII, and buffers keycodes in a ring buffer.
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const KBD_GETKEY = 0x00;  // non-blocking read (CF=0/AL=key or CF=1)
+pub const KBD_WAIT   = 0x04;  // blocking wait (AL=key)
+pub const KBD_STATUS = 0x08;  // modifier state (AL=modifiers)
+
+const KBD_API_SIZE = 0x0C;
+const KBD_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// Modifier bits
+// ---------------------------------------------------------------------------
+
+pub const MOD_SHIFT = 0x01;
+pub const MOD_CTRL  = 0x02;
+pub const MOD_ALT   = 0x04;
+pub const MOD_CAPS  = 0x08;
+
+// ---------------------------------------------------------------------------
+// Matrix constants
+// ---------------------------------------------------------------------------
+
+const NUM_ROWS = 10;
+const BUF_SIZE = 32;
+const BUF_MASK = 0x1F;  // BUF_SIZE - 1
+
+// Modifier key positions (row, bit)
+const MOD_SHIFT_L_ROW = 0;
+const MOD_SHIFT_L_BIT = 0x01;  // bit 0
+const MOD_SHIFT_R_ROW = 0;
+const MOD_SHIFT_R_BIT = 0x02;  // bit 1
+const MOD_CTRL_ROW    = 2;
+const MOD_CTRL_BIT    = 0x01;  // bit 0
+const MOD_ALT_ROW     = 1;
+const MOD_ALT_BIT     = 0x01;  // bit 0
+const MOD_CAPS_ROW    = 2;
+const MOD_CAPS_BIT    = 0x02;  // bit 1
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0710);
+u8[10] cur_scan;
+u8[10] prev_scan;
+u8 scan_row;
+u8 modifiers;
+u8[32] key_buf;
+u8 buf_head;
+u8 buf_tail;
+u8 buf_count;
+end at;
+
+// ---------------------------------------------------------------------------
+// Unshifted keymap (row*8+col -> ASCII, 0xFF = no key / modifier)
+// ---------------------------------------------------------------------------
+
+u8[80] keymap_normal = {
+    0xFF, 0xFF, 0xFF, 0x1C, 0x0D, 0xFF, 0xFF, 0xFF,  // row 0
+    0xFF, 0x60, 0x1B, 0x20, 0xFF, 0xFF, 0x35, 0xFF,  // row 1
+    0xFF, 0xFF, 0x31, 0x09, 0xFF, 0xFF, 0xFF, 0xFF,  // row 2
+    0x33, 0x32, 0x71, 0x77, 0x65, 0xFF, 0x73, 0x64,  // row 3
+    0x34, 0xFF, 0x7A, 0x78, 0x61, 0xFF, 0x72, 0x66,  // row 4
+    0xFF, 0xFF, 0x62, 0x76, 0x74, 0x79, 0x67, 0x63,  // row 5
+    0x36, 0x19, 0x1A, 0x1D, 0x5C, 0x2F, 0x68, 0x6E,  // row 6
+    0x3D, 0x37, 0x18, 0x1E, 0x17, 0x75, 0x6D, 0x6B,  // row 7
+    0x38, 0x2D, 0x5D, 0x5B, 0x27, 0x69, 0x6A, 0x2C,  // row 8
+    0x30, 0x39, 0x08, 0x70, 0x3B, 0x6C, 0x6F, 0x2E   // row 9
+};
+
+u8[80] keymap_shifted = {
+    0xFF, 0xFF, 0xFF, 0x1C, 0x0D, 0xFF, 0xFF, 0xFF,  // row 0
+    0xFF, 0x7E, 0x1B, 0x20, 0xFF, 0xFF, 0x25, 0xFF,  // row 1: ~, %
+    0xFF, 0xFF, 0x21, 0x09, 0xFF, 0xFF, 0xFF, 0xFF,  // row 2: !
+    0x23, 0x40, 0x51, 0x57, 0x45, 0xFF, 0x53, 0x44,  // row 3: #@QWESD
+    0x24, 0xFF, 0x5A, 0x58, 0x41, 0xFF, 0x52, 0x46,  // row 4: $ZXARF
+    0xFF, 0xFF, 0x42, 0x56, 0x54, 0x59, 0x47, 0x43,  // row 5: BVTYGC
+    0x5E, 0x19, 0x1A, 0x1D, 0x7C, 0x3F, 0x48, 0x4E,  // row 6: ^|?HN
+    0x2B, 0x26, 0x18, 0x1E, 0x17, 0x55, 0x4D, 0x4B,  // row 7: +&UMK
+    0x2A, 0x5F, 0x7D, 0x7B, 0x22, 0x49, 0x4A, 0x3C,  // row 8: *_}{"IJ<
+    0x29, 0x28, 0x08, 0x50, 0x3A, 0x4C, 0x4F, 0x3E   // row 9: )(P:LO>
+};
+
+// ---------------------------------------------------------------------------
+// IRQ FA — Scan cycle reset (fires every ~10ms)
+// ---------------------------------------------------------------------------
+
+fn interrupt(0xFA) scan_cycle_handler() {
+    // Pulse the keyboard sequencer to start a new scan
+    port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
+    port_out(PORT_KBD_SEQ, KBD_SEQ_RUN);
+
+    // Reset row counter
+    scan_row := 0;
+
+    // Acknowledge IRQ
+    port_out(PORT_IRQ_CLEAR, IRQCLR_FA);
+}
+
+// ---------------------------------------------------------------------------
+// IRQ FB — Row data ready (fires once per row, 10 times per cycle)
+// ---------------------------------------------------------------------------
+
+fn interrupt(0xFB) row_scan_handler() {
+    // Read row data
+    u8 row = scan_row;
+    u8 data = port_in(PORT_KBD_ROW);
+    u16 idx = zero_extend(row);
+    cur_scan[idx] := data;
+
+    // Advance row
+    row := row + 1;
+    scan_row := row;
+
+    // After all 10 rows, process the scan
+    if (row >= NUM_ROWS) {
+        process_scan();
+    }
+
+    // Acknowledge IRQ
+    port_out(PORT_IRQ_CLEAR, IRQCLR_FB);
+}
+
+// ---------------------------------------------------------------------------
+// Process a complete scan — debounce, detect changes, translate
+// ---------------------------------------------------------------------------
+
+fn process_scan() {
+    // Update modifier state from current scan
+    u8 mods = 0;
+    if ((cur_scan[MOD_SHIFT_L_ROW] & MOD_SHIFT_L_BIT) != 0) {
+        mods := mods | MOD_SHIFT;
+    }
+    if ((cur_scan[MOD_SHIFT_R_ROW] & MOD_SHIFT_R_BIT) != 0) {
+        mods := mods | MOD_SHIFT;
+    }
+    if ((cur_scan[MOD_CTRL_ROW] & MOD_CTRL_BIT) != 0) {
+        mods := mods | MOD_CTRL;
+    }
+    if ((cur_scan[MOD_ALT_ROW] & MOD_ALT_BIT) != 0) {
+        mods := mods | MOD_ALT;
+    }
+    // Caps lock toggles on press (detect rising edge)
+    if ((cur_scan[MOD_CAPS_ROW] & MOD_CAPS_BIT) != 0) {
+        if ((prev_scan[MOD_CAPS_ROW] & MOD_CAPS_BIT) == 0) {
+            mods := modifiers ^ MOD_CAPS;  // toggle
+        } else {
+            mods := (mods & ~MOD_CAPS) | (modifiers & MOD_CAPS);  // keep
+        }
+    } else {
+        mods := (mods & ~MOD_CAPS) | (modifiers & MOD_CAPS);  // keep
+    }
+    modifiers := mods;
+
+    // Detect newly pressed keys (rising edges)
+    u16 row = 0;
+    while (row < NUM_ROWS) {
+        u8 changed = cur_scan[row] & ~prev_scan[row];  // newly pressed
+        if (changed != 0) {
+            // Check each bit
+            u8 bit = 0;
+            u8 mask = 0x01;
+            while (bit < 8) {
+                if ((changed & mask) != 0) {
+                    // Key at (row, bit) was just pressed
+                    u16 keyidx = (row << 3) + zero_extend(bit);
+                    u8 code;
+                    if ((mods & MOD_SHIFT) != 0) {
+                        code := keymap_shifted[keyidx];
+                    } else {
+                        code := keymap_normal[keyidx];
+                    }
+                    // Apply caps lock to letters
+                    if ((mods & MOD_CAPS) != 0) {
+                        if (code >= 0x61) {
+                            if (code <= 0x7A) {
+                                code := code & 0xDF;  // to uppercase
+                            }
+                        }
+                    }
+                    if (code != 0xFF) {
+                        buf_push(code);
+                    }
+                }
+                mask := mask << 1;
+                bit := bit + 1;
+            }
+        }
+
+        // Copy current to previous
+        prev_scan[row] := cur_scan[row];
+        row := row + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ring buffer operations
+// ---------------------------------------------------------------------------
+
+fn buf_push(key: u8) {
+    if (buf_count >= BUF_SIZE) {
+        return;  // buffer full, drop key
+    }
+    u16 idx = zero_extend(buf_head);
+    key_buf[idx] := key;
+    buf_head := (buf_head + 1) & BUF_MASK;
+    buf_count := buf_count + 1;
+}
+
+fn buf_pop() -> u8 {
+    u16 idx = zero_extend(buf_tail);
+    u8 key = key_buf[idx];
+    buf_tail := (buf_tail + 1) & BUF_MASK;
+    buf_count := buf_count - 1;
+    return key;
+}
+
+// ---------------------------------------------------------------------------
+// API: getkey — non-blocking read
+// ---------------------------------------------------------------------------
+
+pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
+    if (buf_count == 0) {
+        CF := 1;
+        return 0;
+    }
+    u8 key = buf_pop();
+    CF := 0;
+    return key;
+}
+
+// ---------------------------------------------------------------------------
+// API: wait — blocking wait for key
+// ---------------------------------------------------------------------------
+
+pub extern fn far wait() -> u8 in AL clobbers(FLAGS) {
+wait_loop:
+    if (buf_count != 0) {
+        u8 key = buf_pop();
+        CF := 0;
+        return key;
+    }
+    halt();
+    goto wait_loop;
+}
+
+// ---------------------------------------------------------------------------
+// API: status — return modifier state
+// ---------------------------------------------------------------------------
+
+pub extern fn far status() -> u8 in AL clobbers(FLAGS) {
+    return modifiers;
+}
+
+// ---------------------------------------------------------------------------
+// Jump table
+// ---------------------------------------------------------------------------
+
+pub far far32[3] kbd_table = {@getkey, @wait, @status};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn keyboard_init() {
+    // Zero RAM state
+    u16 i = 0;
+    while (i < NUM_ROWS) {
+        cur_scan[i] := 0;
+        prev_scan[i] := 0;
+        i := i + 1;
+    }
+    scan_row := 0;
+    modifiers := 0;
+    buf_head := 0;
+    buf_tail := 0;
+    buf_count := 0;
+
+    // Pulse sequencer to start scanning
+    port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
+    port_out(PORT_KBD_SEQ, KBD_SEQ_RUN);
+
+    // Unmask keyboard IRQs (FA and FB)
+    // IRQ mask is active-low: read current, clear bits to enable
+    u8 mask = port_in(PORT_IRQ_MASK);
+    mask := mask & ~IRQ_FA;
+    mask := mask & ~IRQ_FB;
+    port_out(PORT_IRQ_MASK, mask);
+
+    // Register with service locator
+    register(DEV_KBD, KBD_VERSION, @kbd_table, KBD_API_SIZE);
+}

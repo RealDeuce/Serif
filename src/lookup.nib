@@ -13,7 +13,7 @@ use "spine.nif";
 // ---------------------------------------------------------------------------
 
 // RAM globals for driver registry
-at(0x0000:0x0500);
+at(0x0000:0x0686);
 u8[16]  reg_ids;
 u8[16]  reg_versions;
 far32[16] reg_tables;

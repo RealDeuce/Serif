@@ -6,6 +6,9 @@
 *.map
 *.dbg
 
+# Local tool copies
+bin/
+
 # Editor backup files
 *~
 *.swp

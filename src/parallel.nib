@@ -25,7 +25,7 @@ const PAR_VERSION  = 1;
 // Shadow of PORT_CONTROL — other drivers also use this register,
 // so we must read-modify-write against a shared shadow.
 // TODO: shared control latch shadow needs cross-driver coordination
-at(0x0000:0x0588);
+at(0x0000:0x0708);
 u8 ctrl_shadow;
 end at;
 

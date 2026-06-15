@@ -14,6 +14,7 @@ use "buzzer.nif";
 use "parallel.nif";
 use "power.nif";
 use "lcd.nif";
+use "keyboard.nif";
 
 // ---------------------------------------------------------------------------
 // Memory layout constants (T400 target)
@@ -75,6 +76,7 @@ fn boot() {
 
     // 7. Driver init — dependency order
     lcd_init();       // display first — needed for debug output
+    keyboard_init();  // keyboard next — IRQ driven
     buzzer_init();
     parallel_init();
     power_init();
