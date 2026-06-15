@@ -119,7 +119,7 @@ fn blit_row_not(idx: u16, mask_lo: u8, mask_hi: u8, shift: u8) {
 //   h:   height in pixels
 // ---------------------------------------------------------------------------
 
-pub extern fn far blit(src: far in ES:SI, x: u16 in DX, y: u8 in AL,
+pub extern fn far blit(src: far32 in ES:SI, x: u16 in DX, y: u8 in AL,
                        op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
 
     const u8 shift = (x & 0x07) as (u8);
@@ -205,7 +205,7 @@ glyph_loop:
 //   len: byte count
 // ---------------------------------------------------------------------------
 
-pub extern fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
+pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
     u16 pos = str`off;
 
     while (len > 0) {
@@ -302,7 +302,7 @@ pub extern fn far clear() clobbers(FLAGS) {
 fn toggle_cursor() {
     u16 px = zero_extend(cursor_col) * CHAR_W;
     u8 py = cursor_row * CHAR_H;
-    far dummy = 0x0000:0x0000;
+    far32 dummy = 0x0000:0x0000;
     blit(dummy, px, py, BLIT_NOT, CHAR_W, CHAR_H);
 }
 
@@ -310,7 +310,7 @@ fn toggle_cursor() {
 // Jump table
 // ---------------------------------------------------------------------------
 
-pub far far[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
+pub far far32[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
 
 // ---------------------------------------------------------------------------
 // Init

@@ -58,7 +58,7 @@ pub extern fn far ready() -> u8 in AL clobbers(FLAGS) {
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far[2] parallel_table = {&write, &ready};
+pub far32[2] parallel_table = {&write, &ready};
 
 // ---------------------------------------------------------------------------
 // Init

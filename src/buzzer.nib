@@ -42,7 +42,7 @@ pub extern fn far off() clobbers(FLAGS) {
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far[3] buzzer_table = {@tone, @on, @off};
+pub far32[3] buzzer_table = {@tone, @on, @off};
 
 // ---------------------------------------------------------------------------
 // Init

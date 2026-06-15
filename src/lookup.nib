@@ -16,7 +16,7 @@ use "spine.nif";
 at(0x0000:0x0500);
 u8[16]  reg_ids;
 u8[16]  reg_versions;
-far[16] reg_tables;
+far32[16] reg_tables;
 u16[16] reg_sizes;
 u8 reg_count;
 end at;
@@ -40,7 +40,7 @@ fn interrupt(0x21) lookup_handler() {
         if (reg_ids[i] == dev_id) {
             found := 1;
             if (reg_versions[i] == dev_ver) {
-                far tbl = reg_tables[i];
+                far32 tbl = reg_tables[i];
                 ES := tbl`seg;
                 u16 BX = tbl`off;
                 CF := 0;
@@ -62,7 +62,7 @@ fn interrupt(0x21) lookup_handler() {
 // Registration — called by driver init
 // ---------------------------------------------------------------------------
 
-pub fn register(id: u8, ver: u8, table: far, size: u16) {
+pub fn register(id: u8, ver: u8, table: far32, size: u16) {
     if (reg_count >= MAX_DRIVERS) {
         return;
     }

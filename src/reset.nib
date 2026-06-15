@@ -34,7 +34,7 @@ const BANK_ROM0 = 0x00;  // ROM bank 0 (high, contains reset vector)
 const BANK_ROM1 = 0x01;  // ROM bank 1
 
 // IVT at physical address 0000:0000
-far[256] ivt at(0x0000:0x0000);
+far32[256] ivt at(0x0000:0x0000);
 end at;
 
 u8[] welcome = "Welcome to Serif!";
@@ -65,7 +65,7 @@ fn boot() {
     port_out(PORT_CARD_WAIT, 0x80);
 
     // 5. Fill all 256 IVT entries with the fault handler
-    far fault_addr = @fault;
+    far32 fault_addr = @fault;
     for (CX in 256..0) {
         ivt[CX - 1] := fault_addr;
     }
@@ -83,7 +83,7 @@ fn boot() {
     IF := 1;
 
     // 9. Welcome message (indirect call through jump table)
-    far print_addr = lcd_table[1];
+    far32 print_addr = lcd_table[1];
     print_addr as print from lcd(@welcome, 17);
 
     // TODO: Jump to main application / shell entry point
