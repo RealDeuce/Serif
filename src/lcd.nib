@@ -122,26 +122,23 @@ fn blit_row_not(idx: u16, mask_lo: u8, mask_hi: u8, shift: u8) {
 fn far blit(src: far in ES:SI, x: u16 in DX, y: u8 in AL,
             op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
 
+    const u8 shift = (x & 0x07) as (u8);
+    const u8 wmask = 0xFF << (8 - w);
+    const u8 mask_lo = wmask >> shift;
+    const u8 rshift = 8 - shift;
+    const u8 mask_hi = wmask << rshift;
+
     u16 idx = (zero_extend(y) << 6) + (x >> 3);
-    u8 shift = (x & 0x07) as (u8);
-    u8 wmask = 0xFF << (8 - w);
-    u8 mask_lo = wmask >> shift;
-    u8 rshift = 8 - shift;
-    u8 mask_hi = wmask << rshift;
-
-    u16 src_off = src`off;
-
     u8 rows_left = h;
+
 row_loop:
     if (rows_left == 0) {
         return;
     }
 
-    SI := src_off;
-    u8 sbyte = [ES:SI];
-    sbyte := sbyte & wmask;
-    u8 src_lo = sbyte >> shift;
-    u8 src_hi = sbyte << rshift;
+    const u8 sbyte = [src] & wmask;
+    const u8 src_lo = sbyte >> shift;
+    const u8 src_hi = sbyte << rshift;
 
     if (op == BLIT_COPY) {
         blit_row_copy(idx, src_lo, src_hi, mask_lo, mask_hi, shift);
@@ -157,7 +154,7 @@ row_loop:
         blit_row_not(idx, mask_lo, mask_hi, shift);
     }
 
-    src_off := src_off + 1;
+    src := src + 1;
     idx := idx + FB_STRIDE;
     rows_left := rows_left - 1;
     goto row_loop;
@@ -166,30 +163,29 @@ row_loop:
 // ---------------------------------------------------------------------------
 // Internal: blit a glyph from font_data
 // ---------------------------------------------------------------------------
+const wmask = 0xFC;  // 6 bits set from MSB
 
 // Direct glyph renderer — COPY only, 6x8, avoids far pointer
 // construction since font_data is in our own code segment.
 fn blit_glyph(ch: u8, px: u16, py: u8) {
+    const u8 shift = (px & 0x07) as (u8);
+    const u8 rshift = 8 - shift;
+    const u8 mask_lo = wmask >> shift;
+    const u8 mask_hi = wmask << rshift;
+
     u16 src_off = (zero_extend(ch) << 3) + &font_data;
     u16 idx = (zero_extend(py) << 6) + (px >> 3);
-    u8 shift = (px & 0x07) as (u8);
-    u8 rshift = 8 - shift;
-    u8 wmask = 0xFC;  // 6 bits set from MSB
-    u8 mask_lo = wmask >> shift;
-    u8 mask_hi = wmask << rshift;
-
     u8 row = 0;
+
 glyph_loop:
     if (row >= CHAR_H) {
         return;
     }
 
     // Read glyph byte from code segment
-    ES := CS;
-    SI := src_off;
-    u8 sbyte = [ES:SI] & wmask;
-    u8 src_lo = sbyte >> shift;
-    u8 src_hi = sbyte << rshift;
+    const u8 sbyte = [CS:src_off] & wmask;
+    const u8 src_lo = sbyte >> shift;
+    const u8 src_hi = sbyte << rshift;
 
     fb[idx] := (fb[idx] & ~mask_lo) | src_lo;
     if (shift != 0) {
@@ -211,12 +207,9 @@ glyph_loop:
 
 fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
     u16 pos = str`off;
-    u16 remaining = len;
 
-    while (remaining > 0) {
-        ES := str`seg;
-        SI := pos;
-        u8 ch = [ES:SI];
+    while (len > 0) {
+        u8 ch = [str];
 
         if (ch == 0x0A) {
             cursor_row := cursor_row + 1;
@@ -252,8 +245,8 @@ fn far print(str: far in ES:SI, len: u16 in CX) clobbers(FLAGS) {
             }
         }
 
-        pos := pos + 1;
-        remaining := remaining - 1;
+        str := str + 1;
+        len := len - 1;
     }
 }
 
