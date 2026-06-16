@@ -7,7 +7,7 @@
 use "platform.nif";
 use "spine.nif";
 use "lookup.nif";
-use "ivt.nif";
+use "irq.nif";
 
 // ---------------------------------------------------------------------------
 // API function offsets (pre-multiplied)
@@ -107,7 +107,7 @@ fn interrupt scan_cycle_handler() ds(0x0000) {
     scan_row := 0;
 
     // Acknowledge IRQ
-    port_out(PORT_IRQ_CLEAR, IRQCLR_FA);
+    irq_ack(IRQCLR_FA);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ fn interrupt row_scan_handler() ds(0x0000) {
     }
 
     // Acknowledge IRQ
-    port_out(PORT_IRQ_CLEAR, IRQCLR_FB);
+    irq_ack(IRQCLR_FB);
 }
 
 // ---------------------------------------------------------------------------
@@ -298,19 +298,12 @@ pub fn keyboard_init() {
     buf_count := 0;
 
     // Install IRQ handlers into IVT before starting the sequencer
-    ivt_install(IRQ_VEC_FA, scan_cycle_handler);
-    ivt_install(IRQ_VEC_FB, row_scan_handler);
+    irq_install(IRQ_VEC_FA, scan_cycle_handler, IRQ_FA, IRQCLR_FA);
+    irq_install(IRQ_VEC_FB, row_scan_handler, IRQ_FB, IRQCLR_FB);
 
     // Pulse sequencer to start scanning
     port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
     port_out(PORT_KBD_SEQ, KBD_SEQ_RUN);
-
-    // Unmask keyboard IRQs (FA and FB)
-    // IRQ mask is active-low: read current, clear bits to enable
-    u8 mask = port_in(PORT_IRQ_MASK);
-    mask := mask & ~IRQ_FA;
-    mask := mask & ~IRQ_FB;
-    port_out(PORT_IRQ_MASK, mask);
 
     // Register with service locator
     register(DEV_KBD, KBD_VERSION, @kbd_table, KBD_API_SIZE);

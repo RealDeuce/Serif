@@ -1,0 +1,54 @@
+// control.nib — Shared gate-array control latch owner
+//
+// PORT_CONTROL (0x30) is a write-only latch shared by UART, RS-232
+// control, Centronics strobe, and diagnostics. This module owns the
+// software shadow so drivers do not clobber each other's bits.
+
+use "platform.nif";
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0707);
+u8 control_shadow;
+end at;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn control_init(initial: u8) ds(0x0000) {
+    control_shadow := initial;
+    port_out(PORT_CONTROL, control_shadow);
+}
+
+// ---------------------------------------------------------------------------
+// Shared latch operations
+// ---------------------------------------------------------------------------
+
+pub fn control_update(clear_mask: u8, set_mask: u8) ds(0x0000) {
+    pushf();
+    cli();
+    control_shadow := (control_shadow & ~clear_mask) | set_mask;
+    port_out(PORT_CONTROL, control_shadow);
+    popf();
+}
+
+pub fn control_set(mask: u8) ds(0x0000) {
+    control_update(0, mask);
+}
+
+pub fn control_clear(mask: u8) ds(0x0000) {
+    control_update(mask, 0);
+}
+
+pub fn control_pulse_low(mask: u8) ds(0x0000) {
+    pushf();
+    cli();
+    control_shadow := control_shadow | mask;
+    port_out(PORT_CONTROL, control_shadow);
+    control_shadow := control_shadow & ~mask;
+    port_out(PORT_CONTROL, control_shadow);
+    popf();
+}

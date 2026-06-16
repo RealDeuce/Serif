@@ -1,0 +1,35 @@
+// status.nib — Shared gate-array status helpers
+//
+// PORT_STATUS (0xA0) contains mixed platform status bits. It is
+// read-only, so it does not need a shadow, but decoded helpers keep
+// bit interpretation consistent across drivers.
+
+use "platform.nif";
+
+pub fn gate_status_read() -> u8 ds(none) {
+    return port_in(PORT_STATUS);
+}
+
+pub fn gate_status_centronics_busy() -> u8 ds(none) {
+    return gate_status_read() & STATUS_CENTRONICS_BUSY;
+}
+
+pub fn gate_status_main_battery_low() -> u8 ds(none) {
+    return gate_status_read() & STATUS_BATT_MAIN;
+}
+
+pub fn gate_status_coin_battery_low() -> u8 ds(none) {
+    return gate_status_read() & STATUS_BATT_CR2032;
+}
+
+pub fn gate_status_pcmcia_battery_ok() -> u8 ds(none) {
+    return gate_status_read() & STATUS_BATT_PCMCIA;
+}
+
+pub fn gate_status_pcmcia_write_protect() -> u8 ds(none) {
+    return gate_status_read() & STATUS_PCMCIA_WP;
+}
+
+pub fn gate_status_pcmcia_absent() -> u8 ds(none) {
+    return gate_status_read() & STATUS_PCMCIA_ABSENT;
+}

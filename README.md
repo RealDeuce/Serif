@@ -68,6 +68,9 @@ src/
   fault.nib       Default fault handler
   platform.nib    Gate array and V20 CPU constants
   spine.nib       Dispatch model constants
+  control.nib     Shared gate-array control latch owner
+  irq.nib         Shared gate-array IRQ mask/clear owner
+  status.nib      Shared gate-array status helpers
   uart.nib        8251 USART constants
   rtc.nib         TC8521AP RTC constants
   timer.nib       Gate array one-shot timer driver

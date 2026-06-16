@@ -9,6 +9,8 @@ at(0xE000:0x0000);
 use "platform.nif";
 use "spine.nif";
 use "ivt.nif";
+use "control.nif";
+use "irq.nif";
 use "lookup.nif";
 use "timer.nif";
 use "buzzer.nif";
@@ -42,6 +44,11 @@ const BEEP_DURATION_TICKS = 192;  // 200ms at TIMER_HZ
 const BEEP_GAP_TICKS = 48;        // 50ms at TIMER_HZ
 
 u8[] welcome = "Welcome to Serif!";
+u8[] parallel_test_line = {
+    0x53, 0x65, 0x72, 0x69, 0x66, 0x20, 0x70, 0x61,
+    0x72, 0x61, 0x6C, 0x6C, 0x65, 0x6C, 0x20, 0x4F,
+    0x4B, 0x0D, 0x0A
+};
 
 fn beep_once(divisor: u16) {
     const far32 tone_addr = buzzer_table[BUZZER_API_TONE];
@@ -60,6 +67,27 @@ fn test_buzzer() {
     beep_once(BEEP_440HZ);
     beep_once(BEEP_660HZ);
     beep_once(BEEP_880HZ);
+}
+
+fn test_parallel() {
+    const far32 ready_addr = parallel_table[PAR_READY];
+    const far32 write_addr = parallel_table[PAR_WRITE];
+    const u8 busy = ready_addr as ready from parallel();
+
+    if (busy != 0) {
+        return;
+    }
+
+    u16 i = 0;
+parallel_loop:
+    if (i >= parallel_test_line`len) {
+        return;
+    }
+
+    const u8 ch = parallel_test_line[i];
+    write_addr as write from parallel(ch);
+    i := i + 1;
+    goto parallel_loop;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,9 +116,9 @@ fn bare boot() {
     const far32 wait_addr = kbd_table[KBD_WAIT];
     u8[1] char_buf;
 
-    // 3. Mask all IRQs and clear pending sources
-    port_out(PORT_IRQ_MASK, 0xFF);
-    port_out(PORT_IRQ_CLEAR, 0xFF);
+    // 3. Initialize shared gate-array latches
+    control_init(0xFF);
+    irq_init();
 
     // 4. Clear PC Card wait state
     port_out(PORT_CARD_WAIT, 0x80);
@@ -118,10 +146,13 @@ fn bare boot() {
     // 10. Buzzer smoke test
     test_buzzer();
 
-    // 11. Enable cursor
+    // 11. Parallel smoke test
+    test_parallel();
+
+    // 12. Enable cursor
     cursor_addr as cursor from lcd(1);
 
-    // 12. Read-eval-print loop
+    // 13. Read-eval-print loop
 repl:
     const u8 ch = wait_addr as wait from keyboard();
     char_buf[0] := ch;

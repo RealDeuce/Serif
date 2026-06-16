@@ -2,11 +2,14 @@
 //
 // Drives the gate array's parallel output: data latch at port 0x40,
 // strobe via the control latch at port 0x30, busy status read from
-// port 0xA0. Basic polled mode — no IRQs.
+// port 0xA0, and ACK via IRQ FE.
 
 use "platform.nif";
 use "spine.nif";
 use "lookup.nif";
+use "control.nif";
+use "irq.nif";
+use "status.nif";
 
 // ---------------------------------------------------------------------------
 // API function offsets (pre-multiplied)
@@ -22,29 +25,43 @@ const PAR_VERSION  = 1;
 // State
 // ---------------------------------------------------------------------------
 
-// Shadow of PORT_CONTROL — other drivers also use this register,
-// so we must read-modify-write against a shared shadow.
-// TODO: shared control latch shadow needs cross-driver coordination
-at(0x0000:0x0708);
-u8 ctrl_shadow;
+at(0x0000:0x070B);
+u8 parallel_acked;
 end at;
+
+// ---------------------------------------------------------------------------
+// IRQ FE — Centronics ACK
+// ---------------------------------------------------------------------------
+
+fn interrupt ack_handler() ds(0x0000) {
+    parallel_acked := 1;
+    irq_ack(IRQCLR_FE);
+}
 
 // ---------------------------------------------------------------------------
 // API functions
 // ---------------------------------------------------------------------------
 
 fn api far write(data: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    parallel_acked := 0;
+    irq_ack(IRQCLR_FE);
+
     // Latch data byte
     port_out(PORT_CENTRONICS, data);
 
-    // Pulse -STB: low then high via control latch
-    const u8 ctrl = ctrl_shadow;
-    port_out(PORT_CONTROL, ctrl | CTRL_CENTRONICS_STB);
-    port_out(PORT_CONTROL, ctrl & ~CTRL_CENTRONICS_STB);
+    // Pulse -STB through the shared control latch.
+    control_pulse_low(CTRL_CENTRONICS_STB);
+
+ack_loop:
+    if (parallel_acked != 0) {
+        return;
+    }
+    halt();
+    goto ack_loop;
 }
 
 fn api far ready() -> u8 in AL ds(none) clobbers(FLAGS) {
-    const u8 val = port_in(PORT_STATUS) & STATUS_CENTRONICS_BUSY;
+    const u8 val = gate_status_centronics_busy();
     if (val != 0) {
         CF := 1;
     } else {
@@ -64,11 +81,11 @@ pub far32[2] parallel_table = {@write, @ready};
 // ---------------------------------------------------------------------------
 
 pub fn parallel_init() {
-    // Init control latch shadow to reset state
-    ctrl_shadow := 0xFF;
+    parallel_acked := 0;
 
     // Idle the data latch
     port_out(PORT_CENTRONICS, 0xFF);
+    irq_install(IRQ_VEC_FE, ack_handler, IRQ_FE, IRQCLR_FE);
 
     // Register with service locator
     register(DEV_PARALLEL, PAR_VERSION, @parallel_table, PAR_API_SIZE);

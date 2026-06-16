@@ -6,7 +6,7 @@
 use "platform.nif";
 use "spine.nif";
 use "lookup.nif";
-use "ivt.nif";
+use "irq.nif";
 
 // ---------------------------------------------------------------------------
 // API function offsets (pre-multiplied)
@@ -38,7 +38,7 @@ end at;
 fn interrupt timer_handler() ds(0x0000) {
     timer_pending := 0;
     timer_fired := 1;
-    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    irq_ack(IRQCLR_F9);
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ fn api far timer_arm(ticks: u8 in AL) ds(0x0000) clobbers(FLAGS) {
     } else {
         timer_pending := 1;
     }
-    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    irq_ack(IRQCLR_F9);
     port_out(PORT_TIMER, ticks);
 }
 
@@ -60,7 +60,7 @@ fn api far timer_cancel() ds(0x0000) clobbers(FLAGS) {
     port_out(PORT_TIMER, 0);
     timer_pending := 0;
     timer_fired := 0;
-    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    irq_ack(IRQCLR_F9);
 }
 
 fn api far timer_status() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
@@ -74,7 +74,7 @@ fn api far timer_wait(ticks: u8 in AL) ds(0x0000) clobbers(FLAGS) {
 
     timer_fired := 0;
     timer_pending := 1;
-    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    irq_ack(IRQCLR_F9);
     port_out(PORT_TIMER, ticks);
 wait_loop:
     if (timer_fired != 0) {
@@ -104,12 +104,7 @@ pub fn timer_init() {
     timer_pending := 0;
     timer_fired := 0;
 
-    ivt_install(IRQ_VEC_F9, timer_handler);
-    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
-
-    u8 mask = port_in(PORT_IRQ_MASK);
-    mask := mask & ~IRQ_F9;
-    port_out(PORT_IRQ_MASK, mask);
+    irq_install(IRQ_VEC_F9, timer_handler, IRQ_F9, IRQCLR_F9);
 
     register(DEV_TIMER, TIMER_VERSION, @timer_table, TIMER_API_SIZE);
 }

@@ -1,0 +1,61 @@
+// irq.nib — Shared gate-array IRQ controller owner
+//
+// PORT_IRQ_MASK (0x60) is a shared active-low mask register.
+// PORT_IRQ_CLEAR (0x90) clears pending IRQ sources with reversed bit
+// numbering. This module owns mask shadowing and clear vocabulary.
+
+use "platform.nif";
+use "ivt.nif";
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0708);
+u8 irq_mask_shadow;
+end at;
+
+// ---------------------------------------------------------------------------
+// Init and clear
+// ---------------------------------------------------------------------------
+
+pub fn irq_init() ds(0x0000) {
+    irq_mask_shadow := 0xFF;
+    port_out(PORT_IRQ_MASK, irq_mask_shadow);
+    port_out(PORT_IRQ_CLEAR, 0xFF);
+}
+
+pub fn irq_ack(clear_bit: u8) ds(none) {
+    port_out(PORT_IRQ_CLEAR, clear_bit);
+}
+
+pub fn irq_clear_all() ds(none) {
+    port_out(PORT_IRQ_CLEAR, 0xFF);
+}
+
+// ---------------------------------------------------------------------------
+// Mask control
+// ---------------------------------------------------------------------------
+
+pub fn irq_enable(mask_bit: u8) ds(0x0000) {
+    pushf();
+    cli();
+    irq_mask_shadow := irq_mask_shadow & ~mask_bit;
+    port_out(PORT_IRQ_MASK, irq_mask_shadow);
+    popf();
+}
+
+pub fn irq_disable(mask_bit: u8) ds(0x0000) {
+    pushf();
+    cli();
+    irq_mask_shadow := irq_mask_shadow | mask_bit;
+    port_out(PORT_IRQ_MASK, irq_mask_shadow);
+    popf();
+}
+
+pub fn irq_install(vector: u8, handler: far32, mask_bit: u8,
+                   clear_bit: u8) ds(0x0000) {
+    ivt_install(vector, handler);
+    irq_ack(clear_bit);
+    irq_enable(mask_bit);
+}

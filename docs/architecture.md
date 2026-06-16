@@ -44,17 +44,34 @@ The reset vector at FFFF:0000 performs the following steps:
 
 Some drivers depend on others being initialized first:
 
-1. IRQ infrastructure (mask all interrupts via PORT_IRQ_MASK)
+1. Shared gate-array latches and IRQ controller
 2. Display (so subsequent drivers can report errors)
 3. Keyboard
-4. Serial, Parallel
-5. Timer
-6. Buzzer
+4. Timer
+5. Buzzer
+6. Serial, Parallel
 7. RTC / Storage (built-in, PCMCIA, FDC)
-8. Power management (enables interrupts as final step)
+8. Power management
 
 The exact order may evolve, but the constraint is: a driver must not
 depend on hardware whose driver hasn't initialized yet.
+
+## Shared Gate-Array Resources
+
+Some gate-array ports contain unrelated hardware controls and must be
+owned centrally rather than shadowed independently by each driver:
+
+| Port | Owner | Purpose |
+|------|-------|---------|
+| 0x30 | `control.nib` | Write-only control latch shadow |
+| 0x60 | `irq.nib` | Active-low IRQ mask shadow |
+| 0x90 | `irq.nib` | IRQ pending-source clear writes |
+| 0xA0 | `status.nib` | Decoded read-only platform status |
+
+Drivers call these internal modules directly. They are not public
+service-locator drivers and do not expose jump tables. This keeps
+shared latch state consistent while preserving each device driver's
+ownership of its own hardware behavior.
 
 ## Driver Dispatch
 
@@ -203,6 +220,9 @@ src/
   lookup.nib      INT 0x21 service locator and driver registry
   platform.nib    Gate array and V20 CPU constants
   spine.nib       Service locator, device IDs, dispatch constants
+  control.nib     Shared gate-array control latch owner
+  irq.nib         Shared gate-array IRQ mask/clear owner
+  status.nib      Shared gate-array status helpers
   uart.nib        8251 USART constants
   rtc.nib         TC8521AP RTC constants
   timer.nib       Gate array one-shot timer driver
