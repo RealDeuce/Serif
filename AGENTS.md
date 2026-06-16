@@ -123,11 +123,38 @@ See `../nib/USAGE.md` for full nibbuild options including
 - Globals that live in RAM must be initialized in the driver's
   init function, not with initializers (which burn ROM space)
 - Use `at()` with `end at;` for memory-mapped globals
+- Initialized top-level data must have explicit placement from `at()`;
+  `far` is not a data placement qualifier. Use `far32` only for
+  segment:offset values.
+- Table-only driver API functions use `fn api far`, not `pub extern`.
+  They remain module-private while exporting the ABI descriptor needed
+  for `as NAME from MODULE(...)` indirect calls.
+- Far driver API functions must declare a `ds(...)` policy.
+  Use `ds(0x0000)` for APIs/interrupt handlers that touch Serif RAM
+  globals, `ds(none)` only when the body uses no DS-default memory,
+  and `ds(caller)` when the function intentionally runs with caller DS.
 - Use `fn bare` for functions that run before the stack exists
   (reset vector, boot entry). Call `frame_enter()` after setting
   up SS:SP if the function has spills, `frame_leave()` before exit.
 - Interrupt handlers use `fn interrupt` (no vector number).
   The handler symbol is a far32 constant. Install into the IVT
   via `ivt_install(vector, handler)` from `ivt.nib`.
+  Interrupt handlers that touch Serif RAM should declare `ds(0x0000)`.
 - Use `pushf(); cli(); ... popf();` to protect critical sections
   (e.g., ring buffer access shared between IRQ and mainline code)
+
+## Commit Conventions
+
+- Use detailed commit messages that explain the reasoning and impact.
+- Wrap commit message lines to 72 columns.
+- Include a `Co-Authored-By:` trailer when committing in this repo.
+
+## Reporting Nib Bugs
+
+- When describing a Nib bug, format it as a complete bug report suitable
+  for copy/pasting into an LLM working in the `../nib` repo.
+- Include the Nib commit tested, the Serif source that triggers the bug,
+  exact build/test commands, expected behavior, actual behavior, and the
+  relevant generated `.nir`/`.asm` or emulator evidence.
+- State whether the bug is a compile failure, generated-code issue, or
+  runtime behavior observed in Dreamulator.

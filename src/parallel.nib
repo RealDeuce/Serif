@@ -33,7 +33,7 @@ end at;
 // API functions
 // ---------------------------------------------------------------------------
 
-pub extern fn far write(data: u8 in AL) clobbers(FLAGS) {
+fn api far write(data: u8 in AL) ds(0x0000) clobbers(FLAGS) {
     // Latch data byte
     port_out(PORT_CENTRONICS, data);
 
@@ -43,7 +43,7 @@ pub extern fn far write(data: u8 in AL) clobbers(FLAGS) {
     port_out(PORT_CONTROL, ctrl & ~CTRL_CENTRONICS_STB);
 }
 
-pub extern fn far ready() -> u8 in AL clobbers(FLAGS) {
+fn api far ready() -> u8 in AL ds(none) clobbers(FLAGS) {
     const u8 val = port_in(PORT_STATUS) & STATUS_CENTRONICS_BUSY;
     if (val != 0) {
         CF := 1;
@@ -57,7 +57,7 @@ pub extern fn far ready() -> u8 in AL clobbers(FLAGS) {
 // Jump table (must follow function definitions)
 // ---------------------------------------------------------------------------
 
-pub far far32[2] parallel_table = {@write, @ready};
+pub far32[2] parallel_table = {@write, @ready};
 
 // ---------------------------------------------------------------------------
 // Init

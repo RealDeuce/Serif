@@ -23,8 +23,9 @@ end at;
 // monitor but prevents execution from continuing into garbage.
 // ---------------------------------------------------------------------------
 
-fn interrupt fault() {
+fn interrupt fault() ds(caller) {
 top:
+    port_out(PORT_BUZZER_EN, BUZZER_OFF);
     halt();
     goto top;
 }

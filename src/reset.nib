@@ -10,6 +10,7 @@ use "platform.nif";
 use "spine.nif";
 use "ivt.nif";
 use "lookup.nif";
+use "timer.nif";
 use "buzzer.nif";
 use "parallel.nif";
 use "power.nif";
@@ -34,8 +35,32 @@ const BANK_RAM1 = 0x10;  // RAM physical page 1
 const BANK_ROM0 = 0x00;  // ROM bank 0 (high, contains reset vector)
 const BANK_ROM1 = 0x01;  // ROM bank 1
 
+const BEEP_440HZ = 698;  // XTAL / 64 / 440Hz
+const BEEP_660HZ = 465;  // XTAL / 64 / 660Hz
+const BEEP_880HZ = 349;  // XTAL / 64 / 880Hz
+const BEEP_DURATION_TICKS = 192;  // 200ms at TIMER_HZ
+const BEEP_GAP_TICKS = 48;        // 50ms at TIMER_HZ
+
 u8[] welcome = "Welcome to Serif!";
-u8[1] char_buf;
+
+fn beep_once(divisor: u16) {
+    const far32 tone_addr = buzzer_table[BUZZER_API_TONE];
+    const far32 on_addr = buzzer_table[BUZZER_API_ON];
+    const far32 off_addr = buzzer_table[BUZZER_API_OFF];
+    const far32 timer_wait_addr = timer_table[TIMER_WAIT];
+
+    tone_addr as tone from buzzer(divisor);
+    on_addr as on from buzzer();
+    timer_wait_addr as timer_wait from timer(BEEP_DURATION_TICKS);
+    off_addr as off from buzzer();
+    timer_wait_addr as timer_wait from timer(BEEP_GAP_TICKS);
+}
+
+fn test_buzzer() {
+    beep_once(BEEP_440HZ);
+    beep_once(BEEP_660HZ);
+    beep_once(BEEP_880HZ);
+}
 
 // ---------------------------------------------------------------------------
 // Boot sequence
@@ -61,6 +86,7 @@ fn bare boot() {
     const far32 print_addr = lcd_table[LCD_PRINT];
     const far32 cursor_addr = lcd_table[LCD_CURSOR];
     const far32 wait_addr = kbd_table[KBD_WAIT];
+    u8[1] char_buf;
 
     // 3. Mask all IRQs and clear pending sources
     port_out(PORT_IRQ_MASK, 0xFF);
@@ -77,23 +103,30 @@ fn bare boot() {
 
     // 7. Driver init — dependency order
     lcd_init();       // display first — needed for debug output
-    // keyboard_init();  // disabled for cursor debugging
+    keyboard_init();  // keyboard next — IRQ driven
+    timer_init();
     buzzer_init();
     parallel_init();
     power_init();
 
-    // 8. Interrupts left disabled for debugging
+    // 8. Enable interrupts
+    IF := 1;
 
     // 9. Welcome message (indirect call through jump table)
     print_addr as print from lcd(@welcome, welcome`len);
 
-    // 10. Enable cursor
+    // 10. Buzzer smoke test
+    test_buzzer();
+
+    // 11. Enable cursor
     cursor_addr as cursor from lcd(1);
 
-    // 11. Halt for debugging
-top:
-    halt();
-    goto top;
+    // 12. Read-eval-print loop
+repl:
+    const u8 ch = wait_addr as wait from keyboard();
+    char_buf[0] := ch;
+    print_addr as print from lcd(@char_buf, 1);
+    goto repl;
 }
 
 // ---------------------------------------------------------------------------

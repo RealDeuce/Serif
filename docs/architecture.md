@@ -48,9 +48,9 @@ Some drivers depend on others being initialized first:
 2. Display (so subsequent drivers can report errors)
 3. Keyboard
 4. Serial, Parallel
-5. RTC / Timer
+5. Timer
 6. Buzzer
-7. Storage (built-in, PCMCIA, FDC)
+7. RTC / Storage (built-in, PCMCIA, FDC)
 8. Power management (enables interrupts as final step)
 
 The exact order may evolve, but the constraint is: a driver must not
@@ -80,7 +80,7 @@ silently using an incompatible table.
 
 ### Jump Tables
 
-Each driver exposes a dense `far[]` array of entry points. The
+Each driver exposes a dense `far32[]` array of entry points. The
 service locator returns a pointer to this array.
 
 Function constants are **pre-multiplied byte offsets** (0x00, 0x04,
@@ -139,17 +139,17 @@ u8[64] buffer;
 u16 flags;
 
 // --- Jump table ---
-pub far[3] example_table;
+pub far32[3] example_table = {@func_a, @func_b, @func_c};
 
 // --- API functions ---
-// Each declares in REG parameter pins and clobbers()
+// Each declares in REG parameter pins, ds(...), and clobbers()
 
-fn func_a() { ... }
-fn func_b() { ... }
-fn func_c() { ... }
+fn api far func_a(arg: u8 in AL) ds(0x0000) clobbers(FLAGS) { ... }
+fn api far func_b() ds(none) clobbers(FLAGS) { ... }
+fn api far func_c() ds(caller) clobbers(FLAGS) { ... }
 
 // --- IRQ handlers (if applicable) ---
-fn irq_handler() { ... }
+fn interrupt irq_handler() ds(0x0000) { ... }
 
 // --- Init (called by boot, not in jump table) ---
 pub fn init() {
@@ -166,6 +166,10 @@ Key points:
   called once by the boot sequence. Applications never call it.
 - **API functions are module-private.** They are reached only
   through the jump table, not by direct `pub` calls.
+- **Far API functions declare a DS policy.** Use `fn api far` for
+  table-only driver entries. Use `ds(0x0000)` for APIs that touch
+  Serif RAM globals, `ds(none)` for DS-free bodies, and `ds(caller)`
+  when caller DS is intentionally used.
 - **IRQ handlers are module-private.** They are installed into the
   IVT by init, not exposed to applications.
 - **State is module-private.** Drivers do not share state directly.
@@ -179,7 +183,7 @@ API surface.
 | Vector | IRQ Source | Typical Owner |
 |--------|-----------|---------------|
 | F8 | Power / timer wake | Power driver |
-| F9 | One-shot timer (PORT_TIMER) | RTC / timer driver |
+| F9 | One-shot timer (PORT_TIMER) | Timer driver |
 | FA | Keyboard scan cycle | Keyboard driver |
 | FB | Keyboard row scan | Keyboard driver |
 | FC | USART receive | Serial driver |
@@ -201,6 +205,7 @@ src/
   spine.nib       Service locator, device IDs, dispatch constants
   uart.nib        8251 USART constants
   rtc.nib         TC8521AP RTC constants
+  timer.nib       Gate array one-shot timer driver
   fdc.nib         N82077AA FDC constants (T200/T500)
   lcd.nib         LCD display driver (blit, text console, cursor)
   font.nib        8×8 character font (from DreamWriter ROM)

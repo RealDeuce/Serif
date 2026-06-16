@@ -70,6 +70,7 @@ src/
   spine.nib       Dispatch model constants
   uart.nib        8251 USART constants
   rtc.nib         TC8521AP RTC constants
+  timer.nib       Gate array one-shot timer driver
   fdc.nib         N82077AA FDC constants
 docs/
   architecture.md Driver dispatch model and memory layout

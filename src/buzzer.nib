@@ -14,9 +14,9 @@ use "lookup.nif";
 // API function offsets (pre-multiplied)
 // ---------------------------------------------------------------------------
 
-pub const BUZZER_TONE = 0;  // set tone divisor (AX = divisor)
-pub const BUZZER_ON   = 1;  // enable buzzer output
-pub const BUZZER_OFF  = 2;  // disable buzzer output
+pub const BUZZER_API_TONE = 0;  // set tone divisor (AX = divisor)
+pub const BUZZER_API_ON   = 1;  // enable buzzer output
+pub const BUZZER_API_OFF  = 2;  // disable buzzer output
 
 const BUZZER_API_SIZE = 0x0C;  // 3 entries × 4 bytes
 const BUZZER_VERSION  = 1;
@@ -25,16 +25,15 @@ const BUZZER_VERSION  = 1;
 // API functions
 // ---------------------------------------------------------------------------
 
-pub extern fn far tone(divisor: u16 in AX) clobbers(FLAGS) {
-    port_out(PORT_BUZZER_LO, AL);
-    port_out(PORT_BUZZER_HI, AH);
+fn api far tone(divisor: u16 in AX) ds(none) clobbers(FLAGS) {
+    port_out16(PORT_BUZZER_LO, divisor);
 }
 
-pub extern fn far on() clobbers(FLAGS) {
+fn api far on() ds(none) clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_ON);
 }
 
-pub extern fn far off() clobbers(FLAGS) {
+fn api far off() ds(none) clobbers(FLAGS) {
     port_out(PORT_BUZZER_EN, BUZZER_OFF);
 }
 

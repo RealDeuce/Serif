@@ -119,8 +119,9 @@ fn blit_row_not(idx: u16, mask_lo: u8, mask_hi: u8, shift: u8) {
 //   h:   height in pixels
 // ---------------------------------------------------------------------------
 
-pub extern fn far blit(src: far32 in ES:SI, x: u16 in DX, y: u8 in AL,
-                       op: u8 in AH, w: u8 in BL, h: u8 in BH) clobbers(FLAGS) {
+fn api far blit(src: far32 in ES:SI, x: u16 in DX, y: u8 in AL,
+                op: u8 in AH, w: u8 in BL, h: u8 in BH)
+    ds(0x0000) clobbers(FLAGS) {
 
     const u8 shift = (x & 0x07) as (u8);
     const u8 wmask = 0xFF << (8 - w);
@@ -236,7 +237,8 @@ glyph_inv_loop:
 //   len: byte count
 // ---------------------------------------------------------------------------
 
-pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
+fn api far print(str: far32 in ES:SI, len: u16 in CX)
+    ds(0x0000) clobbers(FLAGS) {
     while (len > 0) {
         const u8 ch = [str];
 
@@ -276,7 +278,7 @@ pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
 // API: cursor — set cursor visibility (0=off, 1=on)
 // ---------------------------------------------------------------------------
 
-pub extern fn far cursor(state: u8 in AL) clobbers(FLAGS) {
+fn api far cursor(state: u8 in AL) ds(0x0000) clobbers(FLAGS) {
     if (state != 0) {
         if (cursor_visible == 0) {
             cursor_visible := 1;
@@ -294,7 +296,8 @@ pub extern fn far cursor(state: u8 in AL) clobbers(FLAGS) {
 // API: setpos — set text cursor position
 // ---------------------------------------------------------------------------
 
-pub extern fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
+fn api far setpos(col: u8 in AL, row: u8 in AH)
+    ds(0x0000) clobbers(FLAGS) {
     if (cursor_visible != 0) {
         erase_cursor();
     }
@@ -309,7 +312,7 @@ pub extern fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
 // API: clear — clear screen and reset cursor
 // ---------------------------------------------------------------------------
 
-pub extern fn far clear() clobbers(FLAGS) {
+fn api far clear() ds(0x0000) clobbers(FLAGS) {
     memset(fb, 0);
     memset(text_buf, 0);
     cursor_col := 0;
@@ -343,7 +346,7 @@ fn erase_cursor() {
 // Jump table
 // ---------------------------------------------------------------------------
 
-pub far far32[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
+pub far32[5] lcd_table = {@blit, @print, @cursor, @setpos, @clear};
 
 // ---------------------------------------------------------------------------
 // Init

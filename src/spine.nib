@@ -4,7 +4,7 @@
 // interrupt in Serif's public API: it maps a device ID + version to
 // a far pointer to that driver's jump table.
 //
-// Driver jump tables are dense far[] arrays. Function constants are
+// Driver jump tables are dense far32[] arrays. Function constants are
 // pre-multiplied byte offsets so the call site is:
 //
 //     bound BX, [table_bounds]    // validate offset (INT 5 on fail)
@@ -49,9 +49,10 @@ pub const DEV_KBD         = 0x02;  // keyboard driver
 pub const DEV_SERIAL      = 0x03;  // USART / serial port
 pub const DEV_PARALLEL    = 0x04;  // Centronics parallel port
 pub const DEV_STORAGE     = 0x05;  // built-in + PCMCIA + FDC
-pub const DEV_RTC         = 0x06;  // real-time clock / timer
+pub const DEV_RTC         = 0x06;  // real-time clock
 pub const DEV_BUZZER      = 0x07;  // tone generator
 pub const DEV_POWER       = 0x08;  // power management
+pub const DEV_TIMER       = 0x09;  // one-shot timer
 
 // ---------------------------------------------------------------------------
 // Hardware IRQ vectors (installed into IVT by driver init)

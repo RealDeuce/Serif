@@ -98,7 +98,7 @@ u8[80] keymap_shifted = {
 // IRQ FA — Scan cycle reset (fires every ~10ms)
 // ---------------------------------------------------------------------------
 
-fn interrupt scan_cycle_handler() {
+fn interrupt scan_cycle_handler() ds(0x0000) {
     // Pulse the keyboard sequencer to start a new scan
     port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
     port_out(PORT_KBD_SEQ, KBD_SEQ_RUN);
@@ -114,7 +114,7 @@ fn interrupt scan_cycle_handler() {
 // IRQ FB — Row data ready (fires once per row, 10 times per cycle)
 // ---------------------------------------------------------------------------
 
-fn interrupt row_scan_handler() {
+fn interrupt row_scan_handler() ds(0x0000) {
     // Read row data
     const u8 data = port_in(PORT_KBD_ROW);
     u8 row = scan_row;
@@ -232,7 +232,7 @@ fn buf_pop() -> u8 {
 // API: getkey — non-blocking read
 // ---------------------------------------------------------------------------
 
-pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
+fn api far getkey() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
     pushf();
     cli();
     if (buf_count == 0) {
@@ -250,7 +250,7 @@ pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
 // API: wait — blocking wait for key
 // ---------------------------------------------------------------------------
 
-pub extern fn far wait() -> u8 in AL clobbers(FLAGS) {
+fn api far wait() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
 wait_loop:
     pushf();
     cli();
@@ -269,7 +269,7 @@ wait_loop:
 // API: status — return modifier state
 // ---------------------------------------------------------------------------
 
-pub extern fn far status() -> u8 in AL clobbers(FLAGS) {
+fn api far status() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
     return modifiers;
 }
 
@@ -277,7 +277,7 @@ pub extern fn far status() -> u8 in AL clobbers(FLAGS) {
 // Jump table
 // ---------------------------------------------------------------------------
 
-pub far far32[3] kbd_table = {@getkey, @wait, @status};
+pub far32[3] kbd_table = {@getkey, @wait, @status};
 
 // ---------------------------------------------------------------------------
 // Init

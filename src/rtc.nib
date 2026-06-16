@@ -3,7 +3,7 @@
 // 4-bit register interface at ports 0xD0–0xDF. Only the low nibble
 // of each port is meaningful. The register set is paged: the MODE
 // register selects between time, alarm, and battery-backed RAM.
-
+//
 // ---------------------------------------------------------------------------
 // I/O ports — time/date registers (page 0)
 // ---------------------------------------------------------------------------

@@ -1,0 +1,115 @@
+// timer.nib — Gate array one-shot timer driver
+//
+// PORT_TIMER is an 8-bit one-shot latch. Writing N arms IRQ F9 for
+// roughly N / TIMER_HZ seconds; writing 0 cancels the pending timer.
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+use "ivt.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const TIMER_ARM    = 0;  // arm one-shot timer (AL = ticks)
+pub const TIMER_CANCEL = 1;  // cancel one-shot timer
+pub const TIMER_STATUS = 2;  // AL = 1 if timer fired, else 0
+pub const TIMER_WAIT   = 3;  // arm and block until fired (AL = ticks)
+
+pub const TIMER_HZ = 960;  // PORT_TIMER ticks at XTAL / 20480
+
+const TIMER_API_SIZE = 0x10;  // 4 entries × 4 bytes
+const TIMER_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0709);
+u8 timer_pending;
+u8 timer_fired;
+end at;
+
+// ---------------------------------------------------------------------------
+// IRQ F9 — one-shot timer fired
+// ---------------------------------------------------------------------------
+
+fn interrupt timer_handler() ds(0x0000) {
+    timer_pending := 0;
+    timer_fired := 1;
+    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+}
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+fn api far timer_arm(ticks: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    timer_fired := 0;
+    if (ticks == 0) {
+        timer_pending := 0;
+    } else {
+        timer_pending := 1;
+    }
+    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    port_out(PORT_TIMER, ticks);
+}
+
+fn api far timer_cancel() ds(0x0000) clobbers(FLAGS) {
+    port_out(PORT_TIMER, 0);
+    timer_pending := 0;
+    timer_fired := 0;
+    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+}
+
+fn api far timer_status() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
+    return timer_fired;
+}
+
+fn api far timer_wait(ticks: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    if (ticks == 0) {
+        return;
+    }
+
+    timer_fired := 0;
+    timer_pending := 1;
+    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+    port_out(PORT_TIMER, ticks);
+wait_loop:
+    if (timer_fired != 0) {
+        return;
+    }
+    halt();
+    goto wait_loop;
+}
+
+// ---------------------------------------------------------------------------
+// Jump table
+// ---------------------------------------------------------------------------
+
+pub far32[4] timer_table = {
+    @timer_arm,
+    @timer_cancel,
+    @timer_status,
+    @timer_wait
+};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn timer_init() {
+    port_out(PORT_TIMER, 0);
+    timer_pending := 0;
+    timer_fired := 0;
+
+    ivt_install(IRQ_VEC_F9, timer_handler);
+    port_out(PORT_IRQ_CLEAR, IRQCLR_F9);
+
+    u8 mask = port_in(PORT_IRQ_MASK);
+    mask := mask & ~IRQ_F9;
+    port_out(PORT_IRQ_MASK, mask);
+
+    register(DEV_TIMER, TIMER_VERSION, @timer_table, TIMER_API_SIZE);
+}

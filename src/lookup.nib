@@ -31,7 +31,7 @@ end at;
 //        CF=1, AH = error code (failure)
 // ---------------------------------------------------------------------------
 
-fn interrupt lookup_handler() {
+fn interrupt lookup_handler() ds(0x0000) {
     const u8 dev_id = AH;
     const u8 dev_ver = AL;
     u8 found = 0;
