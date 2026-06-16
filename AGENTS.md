@@ -42,6 +42,54 @@ See [`docs/architecture.md`](docs/architecture.md) for the full
 design: boot sequence, dispatch model, driver module structure,
 hardware IRQ assignments, and init ordering.
 
+### Emulator Testing
+
+The Dreamulator emulates the DreamWriter T400 hardware. Binary path:
+
+```
+/usr/home/admin/T400/dreamulator/build/dreamulator
+```
+
+**Launching** (always clear NVRAM for clean state):
+
+```sh
+rm -f /home/admin/.fltk/dreamulator/dreamulator/serif.bin.nvram
+/usr/home/admin/T400/dreamulator/build/dreamulator --remote 9999 --rom serif.bin
+```
+
+**Remote debug protocol** (connect via `printf "cmd\n" | nc -w 1 localhost 9999`):
+
+| Command | Description |
+|---------|-------------|
+| `stop` | Pause execution |
+| `run` | Resume execution |
+| `reset` | Reset CPU to power-on state |
+| `step` | Execute one instruction |
+| `regs` | Dump all registers and flags |
+| `status` | Show PC and run state |
+| `dis SEG:OFF N` | Disassemble N instructions |
+| `mem SEG:OFF N` | Dump N bytes of memory |
+| `bp SEG:OFF` | Set breakpoint |
+| `cbp SEG:OFF` | Clear breakpoint (by address, not index) |
+| `lbp` | List active breakpoints |
+| `key ROW BIT down/up` | Simulate keyboard matrix press/release |
+| `io PORT` | Read I/O port |
+| `wio SEG:OFF` | Write watchpoint on memory address |
+
+**Standard debug workflow**: connect → `stop` → set breakpoints → `reset` → `run`.
+Boot to HLT/REPL takes ~1 second when working correctly.
+
+**NVRAM persistence**: The emulator saves RAM state between runs to
+`~/.fltk/dreamulator/dreamulator/<romname>.nvram`. Always delete this
+file before testing to avoid stale state from previous builds.
+
+**Disassembly**: Prefer `nibdis` over the emulator's `dis` command for
+inspecting generated code — it uses the map and debug files:
+
+```sh
+../nib/nibdis -m serif.map -d serif.dbg -l function_name serif.bin
+```
+
 ### Debugging
 
 The hardware monitor uses `.dbg` files to map addresses back to

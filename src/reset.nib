@@ -8,7 +8,7 @@ at(0xE000:0x0000);
 
 use "platform.nif";
 use "spine.nif";
-use "fault.nif";
+use "ivt.nif";
 use "lookup.nif";
 use "buzzer.nif";
 use "parallel.nif";
@@ -34,10 +34,6 @@ const BANK_RAM1 = 0x10;  // RAM physical page 1
 const BANK_ROM0 = 0x00;  // ROM bank 0 (high, contains reset vector)
 const BANK_ROM1 = 0x01;  // ROM bank 1
 
-// IVT at physical address 0000:0000
-far32[256] ivt at(0x0000:0x0000);
-end at;
-
 u8[] welcome = "Welcome to Serif!";
 u8[1] char_buf;
 
@@ -45,7 +41,7 @@ u8[1] char_buf;
 // Boot sequence
 // ---------------------------------------------------------------------------
 
-fn boot() {
+fn bare boot() {
     // 1. Segments and stack
     SS := 0x0000;
     SP := STACK_TOP;
@@ -58,8 +54,10 @@ fn boot() {
     port_out(PORT_BANK6, BANK_ROM1);
     port_out(PORT_BANK7, BANK_ROM0);
 
+    // Stack is now valid — establish frame for spills
+    frame_enter();
+
     // Const locals — declared early for low BP offsets
-    const far32 fault_addr = @fault;
     const far32 print_addr = lcd_table[LCD_PRINT];
     const far32 cursor_addr = lcd_table[LCD_CURSOR];
     const far32 wait_addr = kbd_table[KBD_WAIT];
@@ -71,10 +69,8 @@ fn boot() {
     // 4. Clear PC Card wait state
     port_out(PORT_CARD_WAIT, 0x80);
 
-    // 5. Fill all 256 IVT entries with the fault handler
-    for (CX in 256..0) {
-        ivt[CX - 1] := fault_addr;
-    }
+    // 5. Fill IVT with default fault handler
+    ivt_init();
 
     // 6. Install service locator
     lookup_init();
@@ -107,7 +103,7 @@ repl:
 // Reset vector — CPU entry point
 // ---------------------------------------------------------------------------
 
-fn at(0xFFFF:0x0000) reset() {
+fn bare at(0xFFFF:0x0000) reset() {
     IF := 0;
     goto boot;
 }

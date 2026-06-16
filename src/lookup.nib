@@ -7,6 +7,7 @@
 // Drivers call register() during init to add themselves.
 
 use "spine.nif";
+use "ivt.nif";
 
 // ---------------------------------------------------------------------------
 // Registry state — parallel arrays, one slot per driver
@@ -30,7 +31,7 @@ end at;
 //        CF=1, AH = error code (failure)
 // ---------------------------------------------------------------------------
 
-fn interrupt(0x21) lookup_handler() {
+fn interrupt lookup_handler() {
     const u8 dev_id = AH;
     const u8 dev_ver = AL;
     u8 found = 0;
@@ -80,6 +81,5 @@ pub fn register(id: u8, ver: u8, table: far32, size: u16) {
 
 pub fn lookup_init() {
     reg_count := 0;
-    // The interrupt(0x21) declaration causes the binder to
-    // install lookup_handler at IVT vector 0x21.
+    ivt_install(INT_LOOKUP, lookup_handler);
 }

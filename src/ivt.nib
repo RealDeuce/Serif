@@ -1,0 +1,53 @@
+// ivt.nib — Interrupt vector table management
+//
+// Owns the IVT at 0000:0000 and the default fault handler.
+// Provides ivt_install() for drivers to register their interrupt
+// handlers at specific vectors.
+
+use "platform.nif";
+use "spine.nif";
+
+// ---------------------------------------------------------------------------
+// IVT at physical address 0000:0000
+// ---------------------------------------------------------------------------
+
+far32[256] ivt at(0x0000:0x0000);
+end at;
+
+// ---------------------------------------------------------------------------
+// Default fault handler
+//
+// Every IVT entry points here until a driver installs its own
+// handler. Also serves as the BOUND (INT 5) exception handler.
+// Halts the CPU in an infinite loop — visible on the hardware
+// monitor but prevents execution from continuing into garbage.
+// ---------------------------------------------------------------------------
+
+fn interrupt fault() {
+top:
+    halt();
+    goto top;
+}
+
+// ---------------------------------------------------------------------------
+// Install a handler into the IVT
+//
+//   vector: interrupt vector number (0-255)
+//   handler: far32 address of the handler function
+// ---------------------------------------------------------------------------
+
+pub fn ivt_install(vector: u8, handler: far32) {
+    const u16 idx = zero_extend(vector);
+    ivt[idx] := handler;
+}
+
+// ---------------------------------------------------------------------------
+// Init — fill all 256 IVT entries with the fault handler
+// ---------------------------------------------------------------------------
+
+pub fn ivt_init() {
+    const far32 fault_addr = fault;
+    for (CX in 256..0) {
+        ivt[CX - 1] := fault_addr;
+    }
+}

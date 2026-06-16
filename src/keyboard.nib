@@ -7,6 +7,7 @@
 use "platform.nif";
 use "spine.nif";
 use "lookup.nif";
+use "ivt.nif";
 
 // ---------------------------------------------------------------------------
 // API function offsets (pre-multiplied)
@@ -97,7 +98,7 @@ u8[80] keymap_shifted = {
 // IRQ FA — Scan cycle reset (fires every ~10ms)
 // ---------------------------------------------------------------------------
 
-fn interrupt(0xFA) scan_cycle_handler() {
+fn interrupt scan_cycle_handler() {
     // Pulse the keyboard sequencer to start a new scan
     port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
     port_out(PORT_KBD_SEQ, KBD_SEQ_RUN);
@@ -113,7 +114,7 @@ fn interrupt(0xFA) scan_cycle_handler() {
 // IRQ FB — Row data ready (fires once per row, 10 times per cycle)
 // ---------------------------------------------------------------------------
 
-fn interrupt(0xFB) row_scan_handler() {
+fn interrupt row_scan_handler() {
     // Read row data
     const u8 data = port_in(PORT_KBD_ROW);
     u8 row = scan_row;
@@ -232,11 +233,15 @@ fn buf_pop() -> u8 {
 // ---------------------------------------------------------------------------
 
 pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
+    pushf();
+    cli();
     if (buf_count == 0) {
+        popf();
         CF := 1;
         return 0;
     }
     const u8 key = buf_pop();
+    popf();
     CF := 0;
     return key;
 }
@@ -247,11 +252,15 @@ pub extern fn far getkey() -> u8 in AL clobbers(FLAGS) {
 
 pub extern fn far wait() -> u8 in AL clobbers(FLAGS) {
 wait_loop:
+    pushf();
+    cli();
     if (buf_count != 0) {
         const u8 key = buf_pop();
+        popf();
         CF := 0;
         return key;
     }
+    popf();
     halt();
     goto wait_loop;
 }
@@ -287,6 +296,10 @@ pub fn keyboard_init() {
     buf_head := 0;
     buf_tail := 0;
     buf_count := 0;
+
+    // Install IRQ handlers into IVT before starting the sequencer
+    ivt_install(IRQ_VEC_FA, scan_cycle_handler);
+    ivt_install(IRQ_VEC_FB, row_scan_handler);
 
     // Pulse sequencer to start scanning
     port_out(PORT_KBD_SEQ, KBD_SEQ_RESET);
