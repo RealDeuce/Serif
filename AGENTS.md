@@ -36,7 +36,7 @@ executables, `.book` for multi-segment binaries.
 
 Serif is structured around device drivers with explicit API
 boundaries, using a service-locator dispatch model (INT 0x21) with
-pre-multiplied jump tables for zero-overhead driver calls.
+far32 jump tables for zero-overhead driver calls.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full
 design: boot sequence, dispatch model, driver module structure,
@@ -99,9 +99,13 @@ Nib source lines for debugging.
 
 Requires the Nib toolchain (`../nib/`). With `nib.build` in place:
 
+```sh
+../nib/nibbuild          # incremental build
+../nib/nibbuild -f       # force rebuild all modules
 ```
-nibbuild          # builds serif.bin
-```
+
+See `../nib/USAGE.md` for full nibbuild options including
+`--nib`, `--asm`, and `--bind` stage argument passthrough.
 
 ## Coding Conventions
 
@@ -114,6 +118,16 @@ nibbuild          # builds serif.bin
 - Driver init functions are named `<driver>_init()` to avoid
   collision in the flat namespace after `use`
 - Constants use `const` with `UPPER_CASE` names
+- Write-once locals should use `const` (initialized with `=`,
+  never assigned with `:=`)
 - Globals that live in RAM must be initialized in the driver's
   init function, not with initializers (which burn ROM space)
 - Use `at()` with `end at;` for memory-mapped globals
+- Use `fn bare` for functions that run before the stack exists
+  (reset vector, boot entry). Call `frame_enter()` after setting
+  up SS:SP if the function has spills, `frame_leave()` before exit.
+- Interrupt handlers use `fn interrupt` (no vector number).
+  The handler symbol is a far32 constant. Install into the IVT
+  via `ivt_install(vector, handler)` from `ivt.nib`.
+- Use `pushf(); cli(); ... popf();` to protect critical sections
+  (e.g., ring buffer access shared between IRQ and mainline code)
