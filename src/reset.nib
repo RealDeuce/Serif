@@ -77,13 +77,12 @@ fn bare boot() {
 
     // 7. Driver init — dependency order
     lcd_init();       // display first — needed for debug output
-    keyboard_init();  // keyboard next — IRQ driven
+    // keyboard_init();  // disabled for cursor debugging
     buzzer_init();
     parallel_init();
     power_init();
 
-    // 8. Enable interrupts
-    IF := 1;
+    // 8. Interrupts left disabled for debugging
 
     // 9. Welcome message (indirect call through jump table)
     print_addr as print from lcd(@welcome, welcome`len);
@@ -91,12 +90,10 @@ fn bare boot() {
     // 10. Enable cursor
     cursor_addr as cursor from lcd(1);
 
-    // 11. Read-eval-print loop
-repl:
-    const u8 ch = wait_addr as wait from keyboard();
-    char_buf[0] := ch;
-    print_addr as print from lcd(@char_buf, 1);
-    goto repl;
+    // 11. Halt for debugging
+top:
+    halt();
+    goto top;
 }
 
 // ---------------------------------------------------------------------------

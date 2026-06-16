@@ -198,6 +198,37 @@ glyph_loop:
     goto glyph_loop;
 }
 
+// Direct glyph renderer — COPY_INV, 6x8, same as blit_glyph but inverted.
+fn blit_glyph_inv(ch: u8, px: u16, py: u8) {
+    const u8 shift = (px & 0x07) as (u8);
+    const u8 rshift = 8 - shift;
+    const u8 mask_lo = wmask >> shift;
+    const u8 mask_hi = wmask << rshift;
+
+    u16 src_off = (zero_extend(ch) << 3) + &font_data;
+    u16 idx = (zero_extend(py) << 6) + (px >> 3);
+    u8 row = 0;
+
+glyph_inv_loop:
+    if (row >= CHAR_H) {
+        return;
+    }
+
+    const u8 sbyte = [CS:src_off] & wmask;
+    const u8 src_lo = sbyte >> shift;
+    const u8 src_hi = sbyte << rshift;
+
+    fb[idx] := (fb[idx] & ~mask_lo) | (~src_lo & mask_lo);
+    if (shift != 0) {
+        fb[idx + 1] := (fb[idx + 1] & ~mask_hi) | (~src_hi & mask_hi);
+    }
+
+    src_off := src_off + 1;
+    idx := idx + FB_STRIDE;
+    row := row + 1;
+    goto glyph_inv_loop;
+}
+
 // ---------------------------------------------------------------------------
 // API: print — render string at cursor position
 //
@@ -217,17 +248,10 @@ pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
         } else if (ch == 0x0D) {
             cursor_col := 0;
         } else {
-            if (cursor_visible != 0) {
-                toggle_cursor();
-            }
-
             u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
             buf_idx := buf_idx + zero_extend(cursor_col);
             text_buf[buf_idx] := ch;
-
-            const u16 px = zero_extend(cursor_col) * CHAR_W;
-            const u8 py = cursor_row * CHAR_H;
-            blit_glyph(ch, px, py);
+            erase_cursor();
 
             cursor_col := cursor_col + 1;
             if (cursor_col >= TEXT_COLS) {
@@ -239,7 +263,7 @@ pub extern fn far print(str: far32 in ES:SI, len: u16 in CX) clobbers(FLAGS) {
             }
 
             if (cursor_visible != 0) {
-                toggle_cursor();
+                draw_cursor();
             }
         }
 
@@ -256,11 +280,11 @@ pub extern fn far cursor(state: u8 in AL) clobbers(FLAGS) {
     if (state != 0) {
         if (cursor_visible == 0) {
             cursor_visible := 1;
-            toggle_cursor();
+            draw_cursor();
         }
     } else {
         if (cursor_visible != 0) {
-            toggle_cursor();
+            erase_cursor();
             cursor_visible := 0;
         }
     }
@@ -272,12 +296,12 @@ pub extern fn far cursor(state: u8 in AL) clobbers(FLAGS) {
 
 pub extern fn far setpos(col: u8 in AL, row: u8 in AH) clobbers(FLAGS) {
     if (cursor_visible != 0) {
-        toggle_cursor();
+        erase_cursor();
     }
     cursor_col := col;
     cursor_row := row;
     if (cursor_visible != 0) {
-        toggle_cursor();
+        draw_cursor();
     }
 }
 
@@ -297,11 +321,22 @@ pub extern fn far clear() clobbers(FLAGS) {
 // Internal: toggle cursor by inverting the cell
 // ---------------------------------------------------------------------------
 
-fn toggle_cursor() {
+fn draw_cursor() {
     const u16 px = zero_extend(cursor_col) * CHAR_W;
     const u8 py = cursor_row * CHAR_H;
-    const far32 dummy = 0x0000:0x0000;
-    blit(dummy, px, py, BLIT_NOT, CHAR_W, CHAR_H);
+    u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
+    buf_idx := buf_idx + zero_extend(cursor_col);
+    const u8 ch = text_buf[buf_idx];
+    blit_glyph_inv(ch, px, py);
+}
+
+fn erase_cursor() {
+    const u16 px = zero_extend(cursor_col) * CHAR_W;
+    const u8 py = cursor_row * CHAR_H;
+    u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
+    buf_idx := buf_idx + zero_extend(cursor_col);
+    const u8 ch = text_buf[buf_idx];
+    blit_glyph(ch, px, py);
 }
 
 // ---------------------------------------------------------------------------
