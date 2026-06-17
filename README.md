@@ -24,8 +24,8 @@ operating system. It provides:
   driver calls
 - **LCD driver** with pixel-level blit operations, an 80x8 text
   console, and cursor support
-- **Device drivers** for the buzzer, parallel port, and power
-  management, with keyboard, serial, RTC, and storage planned
+- **Device drivers** for the LCD, keyboard, buzzer, timer, UART,
+  parallel port, and power management, with RTC and storage planned
 - **Platform constants** for the V20 CPU, gate array, and all
   on-board peripherals (USART, RTC, FDC)
 
@@ -71,7 +71,7 @@ src/
   control.nib     Shared gate-array control latch owner
   irq.nib         Shared gate-array IRQ mask/clear owner
   status.nib      Shared gate-array status helpers
-  uart.nib        8251 USART constants
+  uart.nib        8251 USART serial driver
   rtc.nib         TC8521AP RTC constants
   timer.nib       Gate array one-shot timer driver
   fdc.nib         N82077AA FDC constants
