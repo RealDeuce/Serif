@@ -1,34 +1,36 @@
-// rtc.nib — TC8521AP / RP5C01 Real-Time Clock constants
+// rtc.nib - TC8521AP / RP5C01 real-time clock driver
 //
-// 4-bit register interface at ports 0xD0–0xDF. Only the low nibble
+// 4-bit register interface at ports 0xD0-0xDF. Only the low nibble
 // of each port is meaningful. The register set is paged: the MODE
 // register selects between time, alarm, and battery-backed RAM.
-//
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+
 // ---------------------------------------------------------------------------
-// I/O ports — time/date registers (page 0)
+// I/O ports
 // ---------------------------------------------------------------------------
 
-pub const PORT_RTC_SEC1    = 0xD0;  // R/W: seconds ones (0–9)
-pub const PORT_RTC_SEC10   = 0xD1;  // R/W: seconds tens (0–5)
-pub const PORT_RTC_MIN1    = 0xD2;  // R/W: minutes ones (0–9)
-pub const PORT_RTC_MIN10   = 0xD3;  // R/W: minutes tens (0–5)
-pub const PORT_RTC_HOUR1   = 0xD4;  // R/W: hours ones (0–9)
-pub const PORT_RTC_HOUR10  = 0xD5;  // R/W: hours tens (0–2)
-pub const PORT_RTC_WDAY    = 0xD6;  // R/W: day of week (0–6, 0=Sunday)
-pub const PORT_RTC_DAY1    = 0xD7;  // R/W: day ones (1–9)
-pub const PORT_RTC_DAY10   = 0xD8;  // R/W: day tens (0–3)
-pub const PORT_RTC_MON1    = 0xD9;  // R/W: month ones (1–9)
-pub const PORT_RTC_MON10   = 0xDA;  // R/W: month tens (0–1)
-pub const PORT_RTC_YEAR1   = 0xDB;  // R/W: year ones (0–9)
-pub const PORT_RTC_YEAR10  = 0xDC;  // R/W: year tens (0–9)
-
-// Control registers (all pages)
+pub const PORT_RTC_SEC1    = 0xD0;  // R/W: seconds ones (0-9)
+pub const PORT_RTC_SEC10   = 0xD1;  // R/W: seconds tens (0-5)
+pub const PORT_RTC_MIN1    = 0xD2;  // R/W: minutes ones (0-9)
+pub const PORT_RTC_MIN10   = 0xD3;  // R/W: minutes tens (0-5)
+pub const PORT_RTC_HOUR1   = 0xD4;  // R/W: hours ones (0-9)
+pub const PORT_RTC_HOUR10  = 0xD5;  // R/W: hours tens (0-2)
+pub const PORT_RTC_WDAY    = 0xD6;  // R/W: day of week (0-6, 0=Sunday)
+pub const PORT_RTC_DAY1    = 0xD7;  // R/W: day ones (1-9)
+pub const PORT_RTC_DAY10   = 0xD8;  // R/W: day tens (0-3)
+pub const PORT_RTC_MON1    = 0xD9;  // R/W: month ones (1-9)
+pub const PORT_RTC_MON10   = 0xDA;  // R/W: month tens (0-1)
+pub const PORT_RTC_YEAR1   = 0xDB;  // R/W: year ones (0-9)
+pub const PORT_RTC_YEAR10  = 0xDC;  // R/W: year tens (0-9)
 pub const PORT_RTC_MODE    = 0xDD;  // R/W: page select, timer/alarm enable
 pub const PORT_RTC_TEST    = 0xDE;  // W: test register (write 0 for normal)
 pub const PORT_RTC_RESET   = 0xDF;  // W: alarm/timer reset, clock output
 
 // ---------------------------------------------------------------------------
-// Register indices (for array-style access)
+// Register indices
 // ---------------------------------------------------------------------------
 
 pub const RTC_SEC1   =  0;
@@ -46,61 +48,444 @@ pub const RTC_YEAR1  = 11;
 pub const RTC_YEAR10 = 12;
 
 pub const RTC_NUM_REGS = 13;
-
-// ---------------------------------------------------------------------------
-// Data mask
-// ---------------------------------------------------------------------------
-
+pub const RTC_RAM_BYTES = 13;
 pub const RTC_NIBBLE = 0x0F;
 
 // ---------------------------------------------------------------------------
-// Write masks per register (page 0: time, page 1: alarm)
-//
-// Only the bits within the mask are writable; remaining bits are
-// reserved or read-only.
+// Page 1 alarm register indices
 // ---------------------------------------------------------------------------
 
-// Page 0 write masks:  F,7,F,7,F,3,7,F,3,F,1,F,F
-// Page 1 write masks:  0,0,F,3,F,3,0,0,0,0,1,3,0
+pub const RTC_ALARM_MIN1   = 2;
+pub const RTC_ALARM_MIN10  = 3;
+pub const RTC_ALARM_HOUR1  = 4;
+pub const RTC_ALARM_HOUR10 = 5;
+pub const RTC_ALARM_WDAY   = 6;
+pub const RTC_ALARM_DAY1   = 7;
+pub const RTC_ALARM_DAY10  = 8;
+pub const RTC_1224_SELECT  = 10;  // page 1: 1 = 24-hour mode
+pub const RTC_LEAP_YEAR    = 11;  // page 1: leap-year counter (0-3)
 
 // ---------------------------------------------------------------------------
-// Mode register bits (PORT_RTC_MODE / 0xDD)
+// Mode and reset bits
 // ---------------------------------------------------------------------------
 
-pub const RTC_PAGE_MASK  = 0x03;  // bits 1:0 — page select
-pub const RTC_ALARM_EN   = 0x04;  // bit 2 — alarm output enable
-pub const RTC_TIMER_EN   = 0x08;  // bit 3 — timer enable (counting)
-
-// ---------------------------------------------------------------------------
-// Page values (MODE register bits 1:0)
-// ---------------------------------------------------------------------------
+pub const RTC_PAGE_MASK  = 0x03;  // bits 1:0 - page select
+pub const RTC_ALARM_EN   = 0x04;  // bit 2 - alarm output enable
+pub const RTC_TIMER_EN   = 0x08;  // bit 3 - counting enable
 
 pub const RTC_PAGE_TIME   = 0x00;  // page 0: time/date registers
-pub const RTC_PAGE_ALARM  = 0x01;  // page 1: alarm + leap year
+pub const RTC_PAGE_ALARM  = 0x01;  // page 1: alarm + control
 pub const RTC_PAGE_RAM_LO = 0x02;  // page 2: RAM low nibbles
 pub const RTC_PAGE_RAM_HI = 0x03;  // page 3: RAM high nibbles
 
-// ---------------------------------------------------------------------------
-// Reset register bits (PORT_RTC_RESET / 0xDF)
-// ---------------------------------------------------------------------------
-
-pub const RTC_RST_ALARM    = 0x01;  // bit 0: reset alarm registers
-pub const RTC_RST_TIMER    = 0x02;  // bit 1: reset 1 Hz divider
-pub const RTC_RST_16HZ_OFF = 0x04;  // bit 2: disable 16 Hz output on -ALARM
-pub const RTC_RST_1HZ_OFF  = 0x08;  // bit 3: disable 1 Hz output on -ALARM
+pub const RTC_RST_ALARM    = 0x01;  // reset alarm registers
+pub const RTC_RST_TIMER    = 0x02;  // reset 1 Hz divider
+pub const RTC_RST_16HZ_OFF = 0x04;  // disable 16 Hz output on -ALARM
+pub const RTC_RST_1HZ_OFF  = 0x08;  // disable 1 Hz output on -ALARM
 
 // ---------------------------------------------------------------------------
-// Alarm register offsets (page 1)
-//
-// When RTC_PAGE_ALARM is selected, ports 0xD0–0xDC map to the alarm
-// comparator registers instead of the time counters.
+// Public data layouts
 // ---------------------------------------------------------------------------
 
-pub const RTC_ALARM_MIN1   = 0xD0;  // alarm minutes ones
-pub const RTC_ALARM_MIN10  = 0xD1;  // alarm minutes tens
-pub const RTC_ALARM_HOUR1  = 0xD2;  // alarm hours ones
-pub const RTC_ALARM_HOUR10 = 0xD3;  // alarm hours tens
-pub const RTC_ALARM_DAY1   = 0xD4;  // alarm day ones
-pub const RTC_ALARM_DAY10  = 0xD5;  // alarm day tens
-pub const RTC_ALARM_WDAY   = 0xD6;  // alarm day of week
-pub const RTC_LEAP_YEAR    = 0xDB;  // leap year counter (0–3, page 1)
+pub struct RtcDateTime {
+    sec: bcd[1];
+    min: bcd[1];
+    hour: bcd[1];
+    wday: u8;
+    day: bcd[1];
+    month: bcd[1];
+    year: bcd[1];
+    leap_year: u8;
+}
+
+pub struct RtcAlarm {
+    min: bcd[1];
+    hour: bcd[1];
+    wday: u8;
+    day: bcd[1];
+}
+
+// Byte offsets for far-buffer APIs. These match the packed structs above.
+pub const RTC_DT_SEC       = 0;
+pub const RTC_DT_MIN       = 1;
+pub const RTC_DT_HOUR      = 2;
+pub const RTC_DT_WDAY      = 3;
+pub const RTC_DT_DAY       = 4;
+pub const RTC_DT_MONTH     = 5;
+pub const RTC_DT_YEAR      = 6;
+pub const RTC_DT_LEAP_YEAR = 7;
+
+pub const RTC_AL_MIN  = 0;
+pub const RTC_AL_HOUR = 1;
+pub const RTC_AL_WDAY = 2;
+pub const RTC_AL_DAY  = 3;
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const RTC_READ_TIME    =  0;
+pub const RTC_WRITE_TIME   =  1;
+pub const RTC_READ_ALARM   =  2;
+pub const RTC_WRITE_ALARM  =  3;
+pub const RTC_ALARM_ENABLE =  4;
+pub const RTC_ALARM_MATCH  =  5;
+pub const RTC_READ_RAM     =  6;
+pub const RTC_WRITE_RAM    =  7;
+pub const RTC_READ_REG     =  8;
+pub const RTC_WRITE_REG    =  9;
+pub const RTC_GET_MODE     = 10;
+pub const RTC_SET_MODE     = 11;
+pub const RTC_RESET        = 12;
+
+const RTC_API_SIZE = 0x34;  // 13 entries * 4 bytes
+const RTC_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0752);
+u8 rtc_mode_shadow;
+end at;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn rtc_port(index: u8) -> u16 {
+    return 0x00D0 + zero_extend(index);
+}
+
+fn pack_bcd(ones: u8, tens: u8) -> u8 {
+    return ((tens & RTC_NIBBLE) << 4) | (ones & RTC_NIBBLE);
+}
+
+fn bcd_ones(val: u8) -> u8 {
+    return val & RTC_NIBBLE;
+}
+
+fn bcd_tens(val: u8) -> u8 {
+    return (val >> 4) & RTC_NIBBLE;
+}
+
+fn select_page(page: u8) {
+    rtc_mode_shadow := (rtc_mode_shadow & 0xFC) | (page & RTC_PAGE_MASK);
+    port_out(PORT_RTC_MODE, rtc_mode_shadow);
+}
+
+fn write_mode(mode: u8) {
+    rtc_mode_shadow := mode & RTC_NIBBLE;
+    port_out(PORT_RTC_MODE, rtc_mode_shadow);
+}
+
+fn read_current(index: u8) -> u8 {
+    return port_in(rtc_port(index)) & RTC_NIBBLE;
+}
+
+fn write_current(index: u8, val: u8) {
+    port_out(rtc_port(index), val & RTC_NIBBLE);
+}
+
+fn read_paged(page: u8, index: u8) -> u8 {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    select_page(page);
+    const u8 val = read_current(index & RTC_NIBBLE);
+    select_page(old_page);
+    return val;
+}
+
+fn write_paged(page: u8, index: u8, val: u8) {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    select_page(page);
+    write_current(index & RTC_NIBBLE, val);
+    select_page(old_page);
+}
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+fn api far read_time(dst: far32 in ES:SI) ds(0x0000) clobbers(FLAGS) {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    u16 out = SI;
+    u8 sec1;
+    u8 sec10;
+    u8 min1;
+    u8 min10;
+    u8 hour1;
+    u8 hour10;
+    u8 wday;
+    u8 day1;
+    u8 day10;
+    u8 mon1;
+    u8 mon10;
+    u8 year1;
+    u8 year10;
+
+read_again:
+    select_page(RTC_PAGE_TIME);
+    sec1 := read_current(RTC_SEC1);
+    sec10 := read_current(RTC_SEC10);
+    min1 := read_current(RTC_MIN1);
+    min10 := read_current(RTC_MIN10);
+    hour1 := read_current(RTC_HOUR1);
+    hour10 := read_current(RTC_HOUR10);
+    wday := read_current(RTC_WDAY);
+    day1 := read_current(RTC_DAY1);
+    day10 := read_current(RTC_DAY10);
+    mon1 := read_current(RTC_MON1);
+    mon10 := read_current(RTC_MON10);
+    year1 := read_current(RTC_YEAR1);
+    year10 := read_current(RTC_YEAR10);
+
+    if (sec1 != read_current(RTC_SEC1)) {
+        goto read_again;
+    }
+    if (sec10 != read_current(RTC_SEC10)) {
+        goto read_again;
+    }
+
+    [ES:out] := pack_bcd(sec1, sec10);
+    out := out + 1;
+    [ES:out] := pack_bcd(min1, min10);
+    out := out + 1;
+    [ES:out] := pack_bcd(hour1, hour10);
+    out := out + 1;
+    [ES:out] := wday;
+    out := out + 1;
+    [ES:out] := pack_bcd(day1, day10);
+    out := out + 1;
+    [ES:out] := pack_bcd(mon1, mon10);
+    out := out + 1;
+    [ES:out] := pack_bcd(year1, year10);
+    out := out + 1;
+
+    select_page(RTC_PAGE_ALARM);
+    [ES:out] := read_current(RTC_LEAP_YEAR);
+    select_page(old_page);
+}
+
+fn api far write_time(src: far32 in ES:SI) ds(0x0000) clobbers(FLAGS) {
+    const u8 old_mode = rtc_mode_shadow;
+    u16 input = SI;
+    const u8 sec = [ES:input];
+    input := input + 1;
+    const u8 min = [ES:input];
+    input := input + 1;
+    const u8 hour = [ES:input];
+    input := input + 1;
+    const u8 wday = [ES:input];
+    input := input + 1;
+    const u8 day = [ES:input];
+    input := input + 1;
+    const u8 month = [ES:input];
+    input := input + 1;
+    const u8 year = [ES:input];
+    input := input + 1;
+    const u8 leap_year = [ES:input];
+
+    write_mode(old_mode & 0xF7);
+    select_page(RTC_PAGE_TIME);
+    write_current(RTC_SEC1, bcd_ones(sec));
+    write_current(RTC_SEC10, bcd_tens(sec));
+    write_current(RTC_MIN1, bcd_ones(min));
+    write_current(RTC_MIN10, bcd_tens(min));
+    write_current(RTC_HOUR1, bcd_ones(hour));
+    write_current(RTC_HOUR10, bcd_tens(hour));
+    write_current(RTC_WDAY, wday);
+    write_current(RTC_DAY1, bcd_ones(day));
+    write_current(RTC_DAY10, bcd_tens(day));
+    write_current(RTC_MON1, bcd_ones(month));
+    write_current(RTC_MON10, bcd_tens(month));
+    write_current(RTC_YEAR1, bcd_ones(year));
+    write_current(RTC_YEAR10, bcd_tens(year));
+
+    select_page(RTC_PAGE_ALARM);
+    write_current(RTC_1224_SELECT, 1);
+    write_current(RTC_LEAP_YEAR, leap_year);
+    write_mode(old_mode);
+}
+
+fn api far read_alarm(dst: far32 in ES:SI) ds(0x0000) clobbers(FLAGS) {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    u16 out = SI;
+    select_page(RTC_PAGE_ALARM);
+    [ES:out] := pack_bcd(read_current(RTC_ALARM_MIN1),
+                         read_current(RTC_ALARM_MIN10));
+    out := out + 1;
+    [ES:out] := pack_bcd(read_current(RTC_ALARM_HOUR1),
+                         read_current(RTC_ALARM_HOUR10));
+    out := out + 1;
+    [ES:out] := read_current(RTC_ALARM_WDAY);
+    out := out + 1;
+    [ES:out] := pack_bcd(read_current(RTC_ALARM_DAY1),
+                         read_current(RTC_ALARM_DAY10));
+    select_page(old_page);
+}
+
+fn api far write_alarm(src: far32 in ES:SI) ds(0x0000) clobbers(FLAGS) {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    u16 input = SI;
+    const u8 min = [ES:input];
+    input := input + 1;
+    const u8 hour = [ES:input];
+    input := input + 1;
+    const u8 wday = [ES:input];
+    input := input + 1;
+    const u8 day = [ES:input];
+
+    select_page(RTC_PAGE_ALARM);
+    write_current(RTC_ALARM_MIN1, bcd_ones(min));
+    write_current(RTC_ALARM_MIN10, bcd_tens(min));
+    write_current(RTC_ALARM_HOUR1, bcd_ones(hour));
+    write_current(RTC_ALARM_HOUR10, bcd_tens(hour));
+    write_current(RTC_ALARM_WDAY, wday);
+    write_current(RTC_ALARM_DAY1, bcd_ones(day));
+    write_current(RTC_ALARM_DAY10, bcd_tens(day));
+    select_page(old_page);
+}
+
+fn api far alarm_enable(enabled: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    if (enabled == 0) {
+        write_mode(rtc_mode_shadow & 0xFB);
+    } else {
+        write_mode(rtc_mode_shadow | RTC_ALARM_EN);
+    }
+}
+
+fn api far alarm_match() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
+    const u8 old_page = rtc_mode_shadow & RTC_PAGE_MASK;
+    select_page(RTC_PAGE_TIME);
+    const u8 min = pack_bcd(read_current(RTC_MIN1), read_current(RTC_MIN10));
+    const u8 hour = pack_bcd(read_current(RTC_HOUR1), read_current(RTC_HOUR10));
+    const u8 wday = read_current(RTC_WDAY);
+    const u8 day = pack_bcd(read_current(RTC_DAY1), read_current(RTC_DAY10));
+
+    select_page(RTC_PAGE_ALARM);
+    const u8 alarm_min = pack_bcd(read_current(RTC_ALARM_MIN1),
+                                  read_current(RTC_ALARM_MIN10));
+    const u8 alarm_hour = pack_bcd(read_current(RTC_ALARM_HOUR1),
+                                   read_current(RTC_ALARM_HOUR10));
+    const u8 alarm_wday = read_current(RTC_ALARM_WDAY);
+    const u8 alarm_day = pack_bcd(read_current(RTC_ALARM_DAY1),
+                                  read_current(RTC_ALARM_DAY10));
+    select_page(old_page);
+
+    if (min != alarm_min) {
+        return 0;
+    }
+    if (hour != alarm_hour) {
+        return 0;
+    }
+    if (wday != alarm_wday) {
+        return 0;
+    }
+    if (day != alarm_day) {
+        return 0;
+    }
+    return 1;
+}
+
+fn api far read_ram(index: u8 in AL) -> u8 in AL ds(0x0000) clobbers(FLAGS) {
+    if (index >= RTC_RAM_BYTES) {
+        return 0;
+    }
+
+    const u8 lo = read_paged(RTC_PAGE_RAM_LO, index);
+    const u8 hi = read_paged(RTC_PAGE_RAM_HI, index);
+    return (hi << 4) | lo;
+}
+
+fn api far write_ram(index: u8 in AL, val: u8 in BL)
+    ds(0x0000) clobbers(FLAGS) {
+    if (index >= RTC_RAM_BYTES) {
+        return;
+    }
+
+    write_paged(RTC_PAGE_RAM_LO, index, val & RTC_NIBBLE);
+    write_paged(RTC_PAGE_RAM_HI, index, (val >> 4) & RTC_NIBBLE);
+}
+
+fn api far read_reg(page: u8 in AL, index: u8 in BL) -> u8 in AL
+    ds(0x0000) clobbers(FLAGS) {
+    const u8 reg = index & RTC_NIBBLE;
+    if (reg == 13) {
+        const u8 mode = port_in(PORT_RTC_MODE) & RTC_NIBBLE;
+        rtc_mode_shadow := mode;
+        return mode;
+    }
+    if (reg == 14) {
+        return port_in(PORT_RTC_TEST) & RTC_NIBBLE;
+    }
+    if (reg == 15) {
+        return port_in(PORT_RTC_RESET) & RTC_NIBBLE;
+    }
+    return read_paged(page & RTC_PAGE_MASK, reg);
+}
+
+fn api far write_reg(page: u8 in AL, index: u8 in BL, val: u8 in CL)
+    ds(0x0000) clobbers(FLAGS) {
+    const u8 reg = index & RTC_NIBBLE;
+    if (reg == 13) {
+        write_mode(val);
+        return;
+    }
+    if (reg == 14) {
+        port_out(PORT_RTC_TEST, val & RTC_NIBBLE);
+        return;
+    }
+    if (reg == 15) {
+        port_out(PORT_RTC_RESET, val & RTC_NIBBLE);
+        return;
+    }
+    write_paged(page & RTC_PAGE_MASK, reg, val);
+}
+
+fn api far get_mode() -> u8 in AL ds(0x0000) clobbers(FLAGS) {
+    return rtc_mode_shadow;
+}
+
+fn api far set_mode(mode: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    write_mode(mode);
+}
+
+fn api far rtc_reset(mask: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    port_out(PORT_RTC_RESET, mask & RTC_NIBBLE);
+}
+
+// ---------------------------------------------------------------------------
+// Jump table
+// ---------------------------------------------------------------------------
+
+pub far32[13] rtc_table = {
+    @read_time,
+    @write_time,
+    @read_alarm,
+    @write_alarm,
+    @alarm_enable,
+    @alarm_match,
+    @read_ram,
+    @write_ram,
+    @read_reg,
+    @write_reg,
+    @get_mode,
+    @set_mode,
+    @rtc_reset
+};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn rtc_init() {
+    port_out(PORT_RTC_TEST, 0);
+    port_out(PORT_RTC_RESET, 0);
+
+    rtc_mode_shadow := RTC_PAGE_ALARM;
+    port_out(PORT_RTC_MODE, rtc_mode_shadow);
+    write_current(RTC_1224_SELECT, 1);
+
+    write_mode(RTC_TIMER_EN | RTC_PAGE_TIME);
+    register(DEV_RTC, RTC_VERSION, @rtc_table, RTC_API_SIZE);
+}

@@ -17,6 +17,7 @@ use "buzzer.nif";
 use "uart.nif";
 use "parallel.nif";
 use "power.nif";
+use "rtc.nif";
 use "lcd.nif";
 use "keyboard.nif";
 
@@ -110,6 +111,192 @@ uart_loop:
     goto uart_loop;
 }
 
+fn uart_putc(write_addr: far32, ch: u8) {
+    write_addr as uart_write from uart(ch);
+}
+
+fn uart_put_bcd(write_addr: far32, val: u8) {
+    uart_putc(write_addr, ((val >> 4) & 0x0F) + 0x30);
+    uart_putc(write_addr, (val & 0x0F) + 0x30);
+}
+
+fn uart_put_hex_digit(write_addr: far32, val: u8) {
+    const u8 digit = val & 0x0F;
+    if (digit < 10) {
+        uart_putc(write_addr, digit + 0x30);
+    } else {
+        uart_putc(write_addr, digit + 0x37);
+    }
+}
+
+fn uart_put_hex(write_addr: far32, val: u8) {
+    uart_put_hex_digit(write_addr, val >> 4);
+    uart_put_hex_digit(write_addr, val);
+}
+
+fn rtc_self_test() -> u8 {
+    const far32 read_time_addr = rtc_table[RTC_READ_TIME];
+    const far32 write_time_addr = rtc_table[RTC_WRITE_TIME];
+    const far32 read_alarm_addr = rtc_table[RTC_READ_ALARM];
+    const far32 write_alarm_addr = rtc_table[RTC_WRITE_ALARM];
+    const far32 alarm_enable_addr = rtc_table[RTC_ALARM_ENABLE];
+    const far32 alarm_match_addr = rtc_table[RTC_ALARM_MATCH];
+    const far32 read_ram_addr = rtc_table[RTC_READ_RAM];
+    const far32 write_ram_addr = rtc_table[RTC_WRITE_RAM];
+    const far32 read_reg_addr = rtc_table[RTC_READ_REG];
+    const far32 write_reg_addr = rtc_table[RTC_WRITE_REG];
+    const far32 get_mode_addr = rtc_table[RTC_GET_MODE];
+    const far32 set_mode_addr = rtc_table[RTC_SET_MODE];
+    const far32 reset_addr = rtc_table[RTC_RESET];
+
+    u8 failures = 0;
+    u8[8] now;
+    u8[8] after;
+    u8[4] alarm;
+    u8[4] alarm_after;
+
+    read_time_addr as rtc_read_time from rtc(@now);
+    write_time_addr as rtc_write_time from rtc(@now);
+    read_time_addr as rtc_read_time from rtc(@after);
+
+    if (now[RTC_DT_MIN] != after[RTC_DT_MIN]) {
+        failures := failures | 0x01;
+    }
+    if (now[RTC_DT_HOUR] != after[RTC_DT_HOUR]) {
+        failures := failures | 0x01;
+    }
+    if (now[RTC_DT_DAY] != after[RTC_DT_DAY]) {
+        failures := failures | 0x01;
+    }
+    if (now[RTC_DT_MONTH] != after[RTC_DT_MONTH]) {
+        failures := failures | 0x01;
+    }
+    if (now[RTC_DT_YEAR] != after[RTC_DT_YEAR]) {
+        failures := failures | 0x01;
+    }
+
+    const u8 old_ram = read_ram_addr as rtc_read_ram from rtc(0);
+    write_ram_addr as rtc_write_ram from rtc(0, 0x5A);
+    const u8 ram_val = read_ram_addr as rtc_read_ram from rtc(0);
+    if (ram_val != 0x5A) {
+        failures := failures | 0x02;
+    }
+    write_ram_addr as rtc_write_ram from rtc(0, old_ram);
+    const u8 bad_ram = read_ram_addr as rtc_read_ram from rtc(RTC_RAM_BYTES);
+    if (bad_ram != 0) {
+        failures := failures | 0x02;
+    }
+
+    const u8 old_raw = read_reg_addr as rtc_read_reg
+        from rtc(RTC_PAGE_RAM_LO, 12);
+    write_reg_addr as rtc_write_reg from rtc(RTC_PAGE_RAM_LO, 12, 0x05);
+    const u8 raw_val = read_reg_addr as rtc_read_reg
+        from rtc(RTC_PAGE_RAM_LO, 12);
+    if (raw_val != 0x05) {
+        failures := failures | 0x04;
+    }
+    write_reg_addr as rtc_write_reg from rtc(RTC_PAGE_RAM_LO, 12, old_raw);
+
+    alarm[RTC_AL_MIN] := after[RTC_DT_MIN];
+    alarm[RTC_AL_HOUR] := after[RTC_DT_HOUR];
+    alarm[RTC_AL_WDAY] := after[RTC_DT_WDAY];
+    alarm[RTC_AL_DAY] := after[RTC_DT_DAY];
+    write_alarm_addr as rtc_write_alarm from rtc(@alarm);
+    read_alarm_addr as rtc_read_alarm from rtc(@alarm_after);
+    u8 full_alarm = 1;
+    if (alarm_after[RTC_AL_MIN] != alarm[RTC_AL_MIN]) {
+        failures := failures | 0x08;
+    }
+    if (alarm_after[RTC_AL_HOUR] != alarm[RTC_AL_HOUR]) {
+        failures := failures | 0x08;
+    }
+    if (alarm_after[RTC_AL_WDAY] != alarm[RTC_AL_WDAY]) {
+        full_alarm := 0;
+    }
+    if (alarm_after[RTC_AL_DAY] != alarm[RTC_AL_DAY]) {
+        full_alarm := 0;
+    }
+    const u8 match = alarm_match_addr as rtc_alarm_match from rtc();
+    if (full_alarm != 0) {
+        if (match == 0) {
+            failures := failures | 0x10;
+        }
+    }
+
+    const u8 saved_mode = get_mode_addr as rtc_get_mode from rtc();
+    alarm_enable_addr as rtc_alarm_enable from rtc(1);
+    const u8 enabled_mode = get_mode_addr as rtc_get_mode from rtc();
+    if ((enabled_mode & RTC_ALARM_EN) == 0) {
+        failures := failures | 0x20;
+    }
+    alarm_enable_addr as rtc_alarm_enable from rtc(0);
+    const u8 disabled_mode = get_mode_addr as rtc_get_mode from rtc();
+    if ((disabled_mode & RTC_ALARM_EN) != 0) {
+        failures := failures | 0x20;
+    }
+
+    const u8 alarm_page_mode = RTC_TIMER_EN | RTC_PAGE_ALARM;
+    set_mode_addr as rtc_set_mode from rtc(alarm_page_mode);
+    const u8 mode_test = get_mode_addr as rtc_get_mode from rtc();
+    if (mode_test != alarm_page_mode) {
+        failures := failures | 0x40;
+    }
+    set_mode_addr as rtc_set_mode from rtc(saved_mode);
+
+    reset_addr as rtc_reset from rtc(0);
+    return failures;
+}
+
+fn test_rtc() {
+    const far32 read_time_addr = rtc_table[RTC_READ_TIME];
+    const far32 write_addr = uart_table[UART_WRITE];
+    u8[8] now;
+
+    read_time_addr as rtc_read_time from rtc(@now);
+
+    uart_putc(write_addr, 0x52);  // R
+    uart_putc(write_addr, 0x54);  // T
+    uart_putc(write_addr, 0x43);  // C
+    uart_putc(write_addr, 0x20);
+    uart_put_bcd(write_addr, now[RTC_DT_YEAR]);
+    uart_putc(write_addr, 0x2D);
+    uart_put_bcd(write_addr, now[RTC_DT_MONTH]);
+    uart_putc(write_addr, 0x2D);
+    uart_put_bcd(write_addr, now[RTC_DT_DAY]);
+    uart_putc(write_addr, 0x20);
+    uart_put_bcd(write_addr, now[RTC_DT_HOUR]);
+    uart_putc(write_addr, 0x3A);
+    uart_put_bcd(write_addr, now[RTC_DT_MIN]);
+    uart_putc(write_addr, 0x3A);
+    uart_put_bcd(write_addr, now[RTC_DT_SEC]);
+    uart_putc(write_addr, 0x0D);
+    uart_putc(write_addr, 0x0A);
+
+    const u8 failures = rtc_self_test();
+    uart_putc(write_addr, 0x52);  // R
+    uart_putc(write_addr, 0x54);  // T
+    uart_putc(write_addr, 0x43);  // C
+    uart_putc(write_addr, 0x20);
+    uart_putc(write_addr, 0x54);  // T
+    uart_putc(write_addr, 0x45);  // E
+    uart_putc(write_addr, 0x53);  // S
+    uart_putc(write_addr, 0x54);  // T
+    uart_putc(write_addr, 0x20);
+    if (failures == 0) {
+        uart_putc(write_addr, 0x4F);  // O
+        uart_putc(write_addr, 0x4B);  // K
+    } else {
+        uart_putc(write_addr, 0x46);  // F
+        uart_putc(write_addr, 0x41);  // A
+        uart_putc(write_addr, 0x49);  // I
+        uart_putc(write_addr, 0x4C);  // L
+        uart_putc(write_addr, 0x20);
+        uart_put_hex(write_addr, failures);
+    }
+    uart_putc(write_addr, 0x0D);
+    uart_putc(write_addr, 0x0A);
+}
+
 // ---------------------------------------------------------------------------
 // Boot sequence
 // ---------------------------------------------------------------------------
@@ -159,6 +346,7 @@ fn bare boot() {
     uart_init();
     parallel_init();
     power_init();
+    rtc_init();
 
     // 8. Enable interrupts
     IF := 1;
@@ -175,10 +363,13 @@ fn bare boot() {
     // 12. UART smoke test
     test_uart();
 
-    // 13. Enable cursor
+    // 13. RTC smoke test
+    test_rtc();
+
+    // 14. Enable cursor
     cursor_addr as cursor from lcd(1);
 
-    // 14. Read-eval-print loop
+    // 15. Read-eval-print loop
 repl:
     ch := getkey_addr as getkey from keyboard();
     if (!CF) {

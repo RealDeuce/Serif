@@ -50,8 +50,9 @@ Some drivers depend on others being initialized first:
 4. Timer
 5. Buzzer
 6. Serial, Parallel
-7. RTC / Storage (built-in, PCMCIA, FDC)
-8. Power management
+7. Power management
+8. RTC
+9. Storage (built-in, PCMCIA, FDC)
 
 The exact order may evolve, but the constraint is: a driver must not
 depend on hardware whose driver hasn't initialized yet.
@@ -211,6 +212,13 @@ API surface.
 Driver init installs handlers into these vectors and configures the
 IRQ mask (PORT_IRQ_MASK at 0x60) to enable the relevant sources.
 
+The TC8521/RP5C01 RTC alarm output is not wired to a Serif IRQ in the
+current driver model. MAME exposes an alarm callback on the chip device
+but does not connect it in the Nakajima board driver, and Dreamulator
+does not currently assert an RTC alarm IRQ. Serif therefore exposes RTC
+alarm register programming and software match checks, not interrupt
+delivery.
+
 ## Source Layout
 
 ```
@@ -224,7 +232,7 @@ src/
   irq.nib         Shared gate-array IRQ mask/clear owner
   status.nib      Shared gate-array status helpers
   uart.nib        8251 USART serial driver
-  rtc.nib         TC8521AP RTC constants
+  rtc.nib         TC8521AP RTC driver
   timer.nib       Gate array one-shot timer driver
   fdc.nib         N82077AA FDC constants (T200/T500)
   lcd.nib         LCD display driver (blit, text console, cursor)
