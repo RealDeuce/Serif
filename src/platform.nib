@@ -44,6 +44,10 @@ pub const LCD_WIDTH      = 480;  // pixels
 pub const LCD_HEIGHT_64  =  64;  // T400 model (64 rows)
 pub const LCD_HEIGHT_128 = 128;  // T200 / T500 models (128 rows)
 pub const LCD_STRIDE     =  60;  // bytes per row (480 / 8)
+pub const LCD_SCAN_STRIDE = 64;  // bytes per scanned row, including padding
+pub const LCD_DEFAULT_SELECTOR = 0x08;    // 0x08 << 9 = 0x1000
+pub const LCD_DEFAULT_FB_OFFSET = 0x1000;
+pub const LCD_FB_SIZE = 0x1000;  // T400 64 rows * 64-byte scan stride
 
 // ---------------------------------------------------------------------------
 // Gate array I/O ports (LC92040D-791)

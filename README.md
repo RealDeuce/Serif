@@ -22,8 +22,9 @@ operating system. It provides:
 - **Driver framework** with a service-locator dispatch model
   (INT 0x21) and pre-multiplied jump tables for zero-overhead
   driver calls
-- **LCD driver** with pixel-level blit operations, an 80x8 text
-  console, and cursor support
+- **Display stack** split into an LCD base-select driver, a public
+  1bpp framebuffer/blitter driver, and an 80x8 text console with
+  cursor support
 - **Device drivers** for the LCD, keyboard, buzzer, timer, UART,
   RTC, parallel port, and power management, with storage planned
 - **Platform constants** for the V20 CPU, gate array, and all
@@ -59,7 +60,9 @@ single-stepping.
 ```
 src/
   reset.nib       Boot sequence and reset vector
-  lcd.nib         LCD display driver
+  lcd.nib         LCD hardware base-select driver
+  fb.nib          Public 1bpp framebuffer/blitter driver
+  console.nib     Public 80x8 text console driver
   font.nib        8x8 character font (from DreamWriter ROM)
   buzzer.nib      Tone generator driver
   parallel.nib    Centronics parallel port driver

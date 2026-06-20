@@ -53,6 +53,8 @@ pub const DEV_RTC         = 0x06;  // real-time clock
 pub const DEV_BUZZER      = 0x07;  // tone generator
 pub const DEV_POWER       = 0x08;  // power management
 pub const DEV_TIMER       = 0x09;  // one-shot timer
+pub const DEV_FB          = 0x0A;  // framebuffer / blitter
+pub const DEV_CONSOLE     = 0x0B;  // text console
 
 // ---------------------------------------------------------------------------
 // Hardware IRQ vectors (installed into IVT by driver init)

@@ -19,6 +19,8 @@ use "parallel.nif";
 use "power.nif";
 use "rtc.nif";
 use "lcd.nif";
+use "fb.nif";
+use "console.nif";
 use "keyboard.nif";
 
 // ---------------------------------------------------------------------------
@@ -318,8 +320,8 @@ fn bare boot() {
     frame_enter();
 
     // Const locals — declared early for low BP offsets
-    const far32 print_addr = lcd_table[LCD_PRINT];
-    const far32 cursor_addr = lcd_table[LCD_CURSOR];
+    const far32 print_addr = console_table[CON_PRINT];
+    const far32 cursor_addr = console_table[CON_CURSOR];
     const far32 getkey_addr = kbd_table[KBD_GETKEY];
     const far32 uart_read_addr = uart_table[UART_READ];
     u8[1] char_buf;
@@ -339,7 +341,9 @@ fn bare boot() {
     lookup_init();
 
     // 7. Driver init — dependency order
-    lcd_init();       // display first — needed for debug output
+    lcd_init();       // LCD base selector first
+    fb_init();        // framebuffer clear/blit service
+    console_init();   // display text service
     keyboard_init();  // keyboard next — IRQ driven
     timer_init();
     buzzer_init();
@@ -352,7 +356,7 @@ fn bare boot() {
     IF := 1;
 
     // 9. Welcome message (indirect call through jump table)
-    print_addr as print from lcd(@welcome, welcome`len);
+    print_addr as console_print from console(@welcome, welcome`len);
 
     // 10. Buzzer smoke test
     test_buzzer();
@@ -367,7 +371,7 @@ fn bare boot() {
     test_rtc();
 
     // 14. Enable cursor
-    cursor_addr as cursor from lcd(1);
+    cursor_addr as console_cursor from console(1);
 
     // 15. Read-eval-print loop
 repl:
@@ -386,7 +390,7 @@ repl:
 
 print_ch:
     char_buf[0] := ch;
-    print_addr as print from lcd(@char_buf, 1);
+    print_addr as console_print from console(@char_buf, 1);
     goto repl;
 }
 

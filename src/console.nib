@@ -1,0 +1,608 @@
+// console.nib - public text console driver
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+use "fb.nif";
+use "font.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const CON_PRINT  = 0;
+pub const CON_CURSOR = 1;
+pub const CON_SETPOS = 2;
+pub const CON_CLEAR  = 3;
+
+const CON_API_SIZE = 0x10;
+const CON_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// Text console constants
+// ---------------------------------------------------------------------------
+
+const TEXT_COLS = 80;
+const TEXT_ROWS = 8;
+const CHAR_W    = 6;
+const CHAR_H    = 8;
+
+// ---------------------------------------------------------------------------
+// RAM state
+// ---------------------------------------------------------------------------
+
+at(0x0000:0x0400);
+u8[640] text_buf;
+u8 cursor_col;
+u8 cursor_row;
+u8 cursor_visible;
+end at;
+
+// ---------------------------------------------------------------------------
+// Internal glyph helpers
+// ---------------------------------------------------------------------------
+
+fn api glyph_copy_s0(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0x03;
+    u16 row = idx;
+
+    const u8 copy_s0 = [ES:src_off] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s1 = [ES:src_off + 1] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s2 = [ES:src_off + 2] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s3 = [ES:src_off + 3] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s4 = [ES:src_off + 4] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s5 = [ES:src_off + 5] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s6 = [ES:src_off + 6] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s7 = [ES:src_off + 7] & src_mask;
+    [row] := ([row] & keep_lo) | copy_s7;
+}
+
+fn api glyph_copy_s2(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xC0;
+    u16 row = idx;
+
+    const u8 copy_s0 = [ES:src_off] & src_mask;
+    const u8 copy_lo0 = copy_s0 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s1 = [ES:src_off + 1] & src_mask;
+    const u8 copy_lo1 = copy_s1 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s2 = [ES:src_off + 2] & src_mask;
+    const u8 copy_lo2 = copy_s2 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s3 = [ES:src_off + 3] & src_mask;
+    const u8 copy_lo3 = copy_s3 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s4 = [ES:src_off + 4] & src_mask;
+    const u8 copy_lo4 = copy_s4 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s5 = [ES:src_off + 5] & src_mask;
+    const u8 copy_lo5 = copy_s5 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s6 = [ES:src_off + 6] & src_mask;
+    const u8 copy_lo6 = copy_s6 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s7 = [ES:src_off + 7] & src_mask;
+    const u8 copy_lo7 = copy_s7 >> 2;
+    [row] := ([row] & keep_lo) | copy_lo7;
+}
+
+fn api glyph_copy_s4(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xF0;
+    const u8 keep_hi = 0x3F;
+    u16 row = idx;
+
+    const u8 copy_s0 = [ES:src_off] & src_mask;
+    const u8 copy_lo0 = copy_s0 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo0;
+    const u8 copy_hi0 = copy_s0 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s1 = [ES:src_off + 1] & src_mask;
+    const u8 copy_lo1 = copy_s1 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo1;
+    const u8 copy_hi1 = copy_s1 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s2 = [ES:src_off + 2] & src_mask;
+    const u8 copy_lo2 = copy_s2 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo2;
+    const u8 copy_hi2 = copy_s2 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s3 = [ES:src_off + 3] & src_mask;
+    const u8 copy_lo3 = copy_s3 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo3;
+    const u8 copy_hi3 = copy_s3 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s4 = [ES:src_off + 4] & src_mask;
+    const u8 copy_lo4 = copy_s4 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo4;
+    const u8 copy_hi4 = copy_s4 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s5 = [ES:src_off + 5] & src_mask;
+    const u8 copy_lo5 = copy_s5 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo5;
+    const u8 copy_hi5 = copy_s5 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s6 = [ES:src_off + 6] & src_mask;
+    const u8 copy_lo6 = copy_s6 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo6;
+    const u8 copy_hi6 = copy_s6 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s7 = [ES:src_off + 7] & src_mask;
+    const u8 copy_lo7 = copy_s7 >> 4;
+    [row] := ([row] & keep_lo) | copy_lo7;
+    const u8 copy_hi7 = copy_s7 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi7;
+}
+
+fn api glyph_copy_s6(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xFC;
+    const u8 keep_hi = 0x0F;
+    u16 row = idx;
+
+    const u8 copy_s0 = [ES:src_off] & src_mask;
+    const u8 copy_lo0 = copy_s0 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo0;
+    const u8 copy_hi0 = copy_s0 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s1 = [ES:src_off + 1] & src_mask;
+    const u8 copy_lo1 = copy_s1 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo1;
+    const u8 copy_hi1 = copy_s1 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s2 = [ES:src_off + 2] & src_mask;
+    const u8 copy_lo2 = copy_s2 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo2;
+    const u8 copy_hi2 = copy_s2 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s3 = [ES:src_off + 3] & src_mask;
+    const u8 copy_lo3 = copy_s3 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo3;
+    const u8 copy_hi3 = copy_s3 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s4 = [ES:src_off + 4] & src_mask;
+    const u8 copy_lo4 = copy_s4 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo4;
+    const u8 copy_hi4 = copy_s4 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s5 = [ES:src_off + 5] & src_mask;
+    const u8 copy_lo5 = copy_s5 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo5;
+    const u8 copy_hi5 = copy_s5 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s6 = [ES:src_off + 6] & src_mask;
+    const u8 copy_lo6 = copy_s6 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo6;
+    const u8 copy_hi6 = copy_s6 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 copy_s7 = [ES:src_off + 7] & src_mask;
+    const u8 copy_lo7 = copy_s7 >> 6;
+    [row] := ([row] & keep_lo) | copy_lo7;
+    const u8 copy_hi7 = copy_s7 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | copy_hi7;
+}
+
+u16[4] glyph_copy_dispatch = {
+    &glyph_copy_s0, &glyph_copy_s2, &glyph_copy_s4, &glyph_copy_s6
+};
+
+fn draw_glyph(ch: u8, px: u16, py: u8) {
+    const far32 font = @font_data;
+    const u16 src_off = font`off + (zero_extend(ch) << 3);
+    const seg src_seg = font`seg;
+    const u16 idx = fb_start_index(px, py);
+    const u8 shift = (px & 0x06) as (u8);
+    const u8 dispatch_idx = shift >> 1;
+    const u16 target = glyph_copy_dispatch[dispatch_idx];
+    tailcall target as glyph_copy_s0(src_seg, src_off, idx);
+}
+
+fn api glyph_inv_s0(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0x03;
+    u16 row = idx;
+
+    const u8 inv_s0 = ~[ES:src_off] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s1 = ~[ES:src_off + 1] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s2 = ~[ES:src_off + 2] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s3 = ~[ES:src_off + 3] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s4 = ~[ES:src_off + 4] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s5 = ~[ES:src_off + 5] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s6 = ~[ES:src_off + 6] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s7 = ~[ES:src_off + 7] & src_mask;
+    [row] := ([row] & keep_lo) | inv_s7;
+}
+
+fn api glyph_inv_s2(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xC0;
+    u16 row = idx;
+
+    const u8 inv_s0 = ~[ES:src_off] & src_mask;
+    const u8 inv_lo0 = inv_s0 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s1 = ~[ES:src_off + 1] & src_mask;
+    const u8 inv_lo1 = inv_s1 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s2 = ~[ES:src_off + 2] & src_mask;
+    const u8 inv_lo2 = inv_s2 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s3 = ~[ES:src_off + 3] & src_mask;
+    const u8 inv_lo3 = inv_s3 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s4 = ~[ES:src_off + 4] & src_mask;
+    const u8 inv_lo4 = inv_s4 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s5 = ~[ES:src_off + 5] & src_mask;
+    const u8 inv_lo5 = inv_s5 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s6 = ~[ES:src_off + 6] & src_mask;
+    const u8 inv_lo6 = inv_s6 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s7 = ~[ES:src_off + 7] & src_mask;
+    const u8 inv_lo7 = inv_s7 >> 2;
+    [row] := ([row] & keep_lo) | inv_lo7;
+}
+
+fn api glyph_inv_s4(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xF0;
+    const u8 keep_hi = 0x3F;
+    u16 row = idx;
+
+    const u8 inv_s0 = ~[ES:src_off] & src_mask;
+    const u8 inv_lo0 = inv_s0 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo0;
+    const u8 inv_hi0 = inv_s0 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s1 = ~[ES:src_off + 1] & src_mask;
+    const u8 inv_lo1 = inv_s1 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo1;
+    const u8 inv_hi1 = inv_s1 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s2 = ~[ES:src_off + 2] & src_mask;
+    const u8 inv_lo2 = inv_s2 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo2;
+    const u8 inv_hi2 = inv_s2 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s3 = ~[ES:src_off + 3] & src_mask;
+    const u8 inv_lo3 = inv_s3 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo3;
+    const u8 inv_hi3 = inv_s3 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s4 = ~[ES:src_off + 4] & src_mask;
+    const u8 inv_lo4 = inv_s4 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo4;
+    const u8 inv_hi4 = inv_s4 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s5 = ~[ES:src_off + 5] & src_mask;
+    const u8 inv_lo5 = inv_s5 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo5;
+    const u8 inv_hi5 = inv_s5 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s6 = ~[ES:src_off + 6] & src_mask;
+    const u8 inv_lo6 = inv_s6 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo6;
+    const u8 inv_hi6 = inv_s6 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s7 = ~[ES:src_off + 7] & src_mask;
+    const u8 inv_lo7 = inv_s7 >> 4;
+    [row] := ([row] & keep_lo) | inv_lo7;
+    const u8 inv_hi7 = inv_s7 << 4;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi7;
+}
+
+fn api glyph_inv_s6(src_seg: seg in ES, src_off: u16 in AX, idx: u16 in BX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u8 src_mask = 0xFC;
+    const u8 keep_lo = 0xFC;
+    const u8 keep_hi = 0x0F;
+    u16 row = idx;
+
+    const u8 inv_s0 = ~[ES:src_off] & src_mask;
+    const u8 inv_lo0 = inv_s0 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo0;
+    const u8 inv_hi0 = inv_s0 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi0;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s1 = ~[ES:src_off + 1] & src_mask;
+    const u8 inv_lo1 = inv_s1 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo1;
+    const u8 inv_hi1 = inv_s1 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi1;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s2 = ~[ES:src_off + 2] & src_mask;
+    const u8 inv_lo2 = inv_s2 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo2;
+    const u8 inv_hi2 = inv_s2 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi2;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s3 = ~[ES:src_off + 3] & src_mask;
+    const u8 inv_lo3 = inv_s3 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo3;
+    const u8 inv_hi3 = inv_s3 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi3;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s4 = ~[ES:src_off + 4] & src_mask;
+    const u8 inv_lo4 = inv_s4 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo4;
+    const u8 inv_hi4 = inv_s4 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi4;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s5 = ~[ES:src_off + 5] & src_mask;
+    const u8 inv_lo5 = inv_s5 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo5;
+    const u8 inv_hi5 = inv_s5 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi5;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s6 = ~[ES:src_off + 6] & src_mask;
+    const u8 inv_lo6 = inv_s6 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo6;
+    const u8 inv_hi6 = inv_s6 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi6;
+    row := row + LCD_SCAN_STRIDE;
+
+    const u8 inv_s7 = ~[ES:src_off + 7] & src_mask;
+    const u8 inv_lo7 = inv_s7 >> 6;
+    [row] := ([row] & keep_lo) | inv_lo7;
+    const u8 inv_hi7 = inv_s7 << 2;
+    [row + 1] := ([row + 1] & keep_hi) | inv_hi7;
+}
+
+u16[4] glyph_inv_dispatch = {
+    &glyph_inv_s0, &glyph_inv_s2, &glyph_inv_s4, &glyph_inv_s6
+};
+
+fn draw_glyph_inv(ch: u8, px: u16, py: u8) {
+    const far32 font = @font_data;
+    const u16 src_off = font`off + (zero_extend(ch) << 3);
+    const seg src_seg = font`seg;
+    const u16 idx = fb_start_index(px, py);
+    const u8 shift = (px & 0x06) as (u8);
+    const u8 dispatch_idx = shift >> 1;
+    const u16 target = glyph_inv_dispatch[dispatch_idx];
+    tailcall target as glyph_inv_s0(src_seg, src_off, idx);
+}
+
+fn draw_cursor() {
+    const u16 px = zero_extend(cursor_col) * CHAR_W;
+    const u8 py = cursor_row * CHAR_H;
+    u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
+    buf_idx := buf_idx + zero_extend(cursor_col);
+    const u8 ch = text_buf[buf_idx];
+    draw_glyph_inv(ch, px, py);
+}
+
+fn erase_cursor() {
+    const u16 px = zero_extend(cursor_col) * CHAR_W;
+    const u8 py = cursor_row * CHAR_H;
+    u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
+    buf_idx := buf_idx + zero_extend(cursor_col);
+    const u8 ch = text_buf[buf_idx];
+    draw_glyph(ch, px, py);
+}
+
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+fn api far console_print(str: far32 in ES:SI, len: u16 in CX)
+    ds(0x0000) clobbers(FLAGS) {
+    while (len > 0) {
+        const u8 ch = [str];
+
+        if (ch == 0x0A) {
+            cursor_row := cursor_row + 1;
+            if (cursor_row >= TEXT_ROWS) {
+                cursor_row := 0;
+            }
+        } else if (ch == 0x0D) {
+            cursor_col := 0;
+        } else {
+            u16 buf_idx = zero_extend(cursor_row) * TEXT_COLS;
+            buf_idx := buf_idx + zero_extend(cursor_col);
+            text_buf[buf_idx] := ch;
+            erase_cursor();
+
+            cursor_col := cursor_col + 1;
+            if (cursor_col >= TEXT_COLS) {
+                cursor_col := 0;
+                cursor_row := cursor_row + 1;
+                if (cursor_row >= TEXT_ROWS) {
+                    cursor_row := 0;
+                }
+            }
+
+            if (cursor_visible != 0) {
+                draw_cursor();
+            }
+        }
+
+        str := str + 1;
+        len := len - 1;
+    }
+}
+
+fn api far console_cursor(state: u8 in AL) ds(0x0000) clobbers(FLAGS) {
+    if (state != 0) {
+        if (cursor_visible == 0) {
+            cursor_visible := 1;
+            draw_cursor();
+        }
+    } else {
+        if (cursor_visible != 0) {
+            erase_cursor();
+            cursor_visible := 0;
+        }
+    }
+}
+
+fn api far console_setpos(col: u8 in AL, row: u8 in AH)
+    ds(0x0000) clobbers(FLAGS) {
+    if (cursor_visible != 0) {
+        erase_cursor();
+    }
+    cursor_col := col;
+    cursor_row := row;
+    if (cursor_visible != 0) {
+        draw_cursor();
+    }
+}
+
+fn api far console_clear() ds(0x0000) clobbers(FLAGS) {
+    const far32 clear_addr = fb_table[FB_CLEAR];
+
+    clear_addr as fb_clear from fb();
+    memset(text_buf, 0);
+    cursor_col := 0;
+    cursor_row := 0;
+    cursor_visible := 0;
+}
+
+// ---------------------------------------------------------------------------
+// Jump table
+// ---------------------------------------------------------------------------
+
+pub far32[4] console_table = {
+    @console_print,
+    @console_cursor,
+    @console_setpos,
+    @console_clear
+};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn console_init() {
+    console_clear();
+    register(DEV_CONSOLE, CON_VERSION, @console_table, CON_API_SIZE);
+}

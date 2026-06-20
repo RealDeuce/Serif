@@ -1,0 +1,3859 @@
+// fb.nib - public 1bpp framebuffer/blitter driver
+
+use "platform.nif";
+use "spine.nif";
+use "lookup.nif";
+use "lcd.nif";
+
+// ---------------------------------------------------------------------------
+// API function offsets (pre-multiplied)
+// ---------------------------------------------------------------------------
+
+pub const FB_CLEAR         = 0;
+pub const FB_BLIT_COPY     = 1;
+pub const FB_BLIT_COPY_INV = 2;
+pub const FB_BLIT_OR       = 3;
+pub const FB_BLIT_XOR      = 4;
+pub const FB_BLIT_AND      = 5;
+pub const FB_BLIT_NOT      = 6;
+
+const FB_API_SIZE = 0x1C;
+const FB_VERSION  = 1;
+
+// ---------------------------------------------------------------------------
+// Public buffer descriptors
+// ---------------------------------------------------------------------------
+
+pub struct FbBuf {
+    far32 src;
+    u16 stride;
+    u16 width;
+    u8 height;
+}
+
+pub struct FbBlit {
+    struct FbBuf buf;
+    u16 dst_x;
+    u8 dst_y;
+}
+
+pub const FB_BUF_SRC_OFF = 0;
+pub const FB_BUF_SRC_SEG = 2;
+pub const FB_BUF_STRIDE  = 4;
+pub const FB_BUF_WIDTH   = 6;
+pub const FB_BUF_HEIGHT  = 8;
+pub const FB_BLIT_DST_X  = 9;
+pub const FB_BLIT_DST_Y  = 11;
+
+// ---------------------------------------------------------------------------
+// API: clear currently selected LCD framebuffer
+// ---------------------------------------------------------------------------
+
+fn api far fb_clear() ds(0x0000)
+    clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    u16 row_base = lcd_fb_offset;
+    u8 row = 0;
+
+clear_row_loop:
+    if (row >= LCD_HEIGHT_64) {
+        return;
+    }
+
+    u16 idx = row_base;
+    const u16 limit = row_base + LCD_STRIDE;
+
+clear_col_loop:
+    if (idx >= limit) {
+        row_base := row_base + LCD_SCAN_STRIDE;
+        row := row + 1;
+        goto clear_row_loop;
+    }
+    [idx] := 0;
+    idx := idx + 1;
+    goto clear_col_loop;
+}
+
+// ---------------------------------------------------------------------------
+// Shared blit setup
+// ---------------------------------------------------------------------------
+
+pub fn fb_start_index(x: u16, y: u8) -> u16 {
+    return lcd_fb_offset + (zero_extend(y) << 6) + (x >> 3);
+}
+
+fn fb_copy_s0_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s0_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s0_fast_full_loop:
+    [idx] := [ES:src_off];
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s0_fast_full_loop;
+    }
+
+copy_s0_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s0_fast_row_loop;
+}
+
+fn fb_copy_s0_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s0_tail:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 sbyte = [ES:src_off] & wmask;
+    [idx] := ([idx] & ~wmask) | sbyte;
+
+copy_s0_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s0_tail_row_loop;
+}
+
+fn api fb_copy_s0(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s0_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s0_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s1_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s1_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 1;
+    const u8 src_hi = sbyte << 7;
+    [idx] := ([idx] & 0x80) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x7F) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s1_full_loop;
+    }
+
+copy_s1_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s1_full_row_loop;
+}
+
+fn fb_copy_s1_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s1_tail:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 1;
+    const u8 tail_hi_mask = wmask << 7;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 1;
+    const u8 tail_hi = tail_byte << 7;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s1_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s1_tail_row_loop;
+}
+
+fn api fb_copy_s1(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s1_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s1_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s2_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s2_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s2_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 2;
+    const u8 src_hi = sbyte << 6;
+    [idx] := ([idx] & 0xC0) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x3F) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s2_fast_full_loop;
+    }
+
+copy_s2_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s2_fast_row_loop;
+}
+
+fn fb_copy_s2_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s2_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 2;
+    const u8 tail_hi_mask = wmask << 6;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 2;
+    const u8 tail_hi = tail_byte << 6;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s2_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s2_tail_row_loop;
+}
+
+fn api fb_copy_s2(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s2_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s2_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s3_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s3_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s3_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 3;
+    const u8 src_hi = sbyte << 5;
+    [idx] := ([idx] & 0xE0) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x1F) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s3_fast_full_loop;
+    }
+
+copy_s3_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s3_fast_row_loop;
+}
+
+fn fb_copy_s3_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s3_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 3;
+    const u8 tail_hi_mask = wmask << 5;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 3;
+    const u8 tail_hi = tail_byte << 5;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s3_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s3_tail_row_loop;
+}
+
+fn api fb_copy_s3(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s3_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s3_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s4_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s4_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s4_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 4;
+    const u8 src_hi = sbyte << 4;
+    [idx] := ([idx] & 0xF0) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x0F) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s4_fast_full_loop;
+    }
+
+copy_s4_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s4_fast_row_loop;
+}
+
+fn fb_copy_s4_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s4_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 4;
+    const u8 tail_hi_mask = wmask << 4;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 4;
+    const u8 tail_hi = tail_byte << 4;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s4_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s4_tail_row_loop;
+}
+
+fn api fb_copy_s4(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s4_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s4_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s5_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s5_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s5_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 5;
+    const u8 src_hi = sbyte << 3;
+    [idx] := ([idx] & 0xF8) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x07) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s5_fast_full_loop;
+    }
+
+copy_s5_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s5_fast_row_loop;
+}
+
+fn fb_copy_s5_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s5_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 5;
+    const u8 tail_hi_mask = wmask << 3;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 5;
+    const u8 tail_hi = tail_byte << 3;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s5_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s5_tail_row_loop;
+}
+
+fn api fb_copy_s5(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s5_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s5_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s6_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s6_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s6_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 6;
+    const u8 src_hi = sbyte << 2;
+    [idx] := ([idx] & 0xFC) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x03) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s6_fast_full_loop;
+    }
+
+copy_s6_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s6_fast_row_loop;
+}
+
+fn fb_copy_s6_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s6_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 6;
+    const u8 tail_hi_mask = wmask << 2;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 6;
+    const u8 tail_hi = tail_byte << 2;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s6_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s6_tail_row_loop;
+}
+
+fn api fb_copy_s6(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s6_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s6_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+fn fb_copy_s7_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s7_fast_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_s7_fast_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 7;
+    const u8 src_hi = sbyte << 1;
+    [idx] := ([idx] & 0xFE) | src_lo;
+    [idx + 1] := ([idx + 1] & 0x01) | src_hi;
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_s7_fast_full_loop;
+    }
+
+copy_s7_fast_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s7_fast_row_loop;
+}
+
+fn fb_copy_s7_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+copy_s7_tail_only:
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 7;
+    const u8 tail_hi_mask = wmask << 1;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 7;
+    const u8 tail_hi = tail_byte << 1;
+    [idx] := ([idx] & ~tail_lo_mask) | tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) | tail_hi;
+
+copy_s7_tail_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_s7_tail_row_loop;
+}
+
+fn api fb_copy_s7(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_s7_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_s7_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+u16[8] fb_copy_dispatch = {
+    &fb_copy_s0, &fb_copy_s1, &fb_copy_s2, &fb_copy_s3,
+    &fb_copy_s4, &fb_copy_s5, &fb_copy_s6, &fb_copy_s7
+};
+
+// ---------------------------------------------------------------------------
+// API: generic 1bpp blit operations
+//
+// desc: far pointer to FbBlit. Source rows are MSB-first, with stride
+// bytes between rows. Width is in pixels.
+// ---------------------------------------------------------------------------
+
+fn api far fb_blit_copy(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 src_row = [ES:SI + FB_BUF_SRC_OFF];
+    const u16 src_stride = [ES:SI + FB_BUF_STRIDE];
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const seg src_seg = [ES:SI + FB_BUF_SRC_SEG] as (seg);
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_copy_dispatch[shift];
+    target as fb_copy_s0(src_seg, src_row, src_stride,
+                         width, height, dst_row);
+}
+
+// ---------------------------------------------------------------------------
+// Shift-specialized non-copy blit helpers
+// ---------------------------------------------------------------------------
+
+fn fb_copy_inv_s0_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s0_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s0_full_loop:
+    const u8 sbyte = [ES:src_off];
+    [idx] := ~sbyte;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s0_full_loop;
+    }
+
+copy_inv_s0_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s0_full_row_loop;
+}
+fn fb_copy_inv_s0_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    [idx] := ([idx] & ~wmask) | tail_byte;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s0_tail_row_loop;
+}
+fn api fb_copy_inv_s0(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s0_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s0_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s1_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s1_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 1;
+    const u8 src_hi = inv_byte << 7;
+    [idx] := ([idx] & 0x80) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x7F) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s1_full_loop;
+    }
+
+copy_inv_s1_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s1_full_row_loop;
+}
+fn fb_copy_inv_s1_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 1;
+    const u8 tail_hi_mask = wmask << 7;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 1;
+    const u8 tail_hi = tail_byte << 7;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s1_tail_row_loop;
+}
+fn api fb_copy_inv_s1(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s1_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s1_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s2_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s2_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s2_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 2;
+    const u8 src_hi = inv_byte << 6;
+    [idx] := ([idx] & 0xC0) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x3F) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s2_full_loop;
+    }
+
+copy_inv_s2_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s2_full_row_loop;
+}
+fn fb_copy_inv_s2_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 2;
+    const u8 tail_hi_mask = wmask << 6;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 2;
+    const u8 tail_hi = tail_byte << 6;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s2_tail_row_loop;
+}
+fn api fb_copy_inv_s2(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s2_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s2_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s3_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s3_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s3_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 3;
+    const u8 src_hi = inv_byte << 5;
+    [idx] := ([idx] & 0xE0) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x1F) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s3_full_loop;
+    }
+
+copy_inv_s3_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s3_full_row_loop;
+}
+fn fb_copy_inv_s3_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 3;
+    const u8 tail_hi_mask = wmask << 5;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 3;
+    const u8 tail_hi = tail_byte << 5;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s3_tail_row_loop;
+}
+fn api fb_copy_inv_s3(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s3_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s3_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s4_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s4_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s4_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 4;
+    const u8 src_hi = inv_byte << 4;
+    [idx] := ([idx] & 0xF0) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x0F) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s4_full_loop;
+    }
+
+copy_inv_s4_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s4_full_row_loop;
+}
+fn fb_copy_inv_s4_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 4;
+    const u8 tail_hi_mask = wmask << 4;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 4;
+    const u8 tail_hi = tail_byte << 4;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s4_tail_row_loop;
+}
+fn api fb_copy_inv_s4(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s4_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s4_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s5_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s5_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s5_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 5;
+    const u8 src_hi = inv_byte << 3;
+    [idx] := ([idx] & 0xF8) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x07) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s5_full_loop;
+    }
+
+copy_inv_s5_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s5_full_row_loop;
+}
+fn fb_copy_inv_s5_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 5;
+    const u8 tail_hi_mask = wmask << 3;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 5;
+    const u8 tail_hi = tail_byte << 3;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s5_tail_row_loop;
+}
+fn api fb_copy_inv_s5(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s5_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s5_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s6_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s6_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s6_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 6;
+    const u8 src_hi = inv_byte << 2;
+    [idx] := ([idx] & 0xFC) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x03) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s6_full_loop;
+    }
+
+copy_inv_s6_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s6_full_row_loop;
+}
+fn fb_copy_inv_s6_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 6;
+    const u8 tail_hi_mask = wmask << 2;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 6;
+    const u8 tail_hi = tail_byte << 2;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s6_tail_row_loop;
+}
+fn api fb_copy_inv_s6(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s6_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s6_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_copy_inv_s7_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s7_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+copy_inv_s7_full_loop:
+    const u8 inv_byte = ~[ES:src_off];
+    const u8 src_lo = inv_byte >> 7;
+    const u8 src_hi = inv_byte << 1;
+    [idx] := ([idx] & 0xFE) |
+             src_lo;
+    [idx + 1] := ([idx + 1] & 0x01) |
+                 src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto copy_inv_s7_full_loop;
+    }
+
+copy_inv_s7_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s7_full_row_loop;
+}
+fn fb_copy_inv_s7_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+copy_inv_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 7;
+    const u8 tail_hi_mask = wmask << 1;
+    const u8 tail_byte = ~[ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 7;
+    const u8 tail_hi = tail_byte << 1;
+    [idx] := ([idx] & ~tail_lo_mask) |
+             tail_lo;
+    [idx + 1] := ([idx + 1] & ~tail_hi_mask) |
+                 tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto copy_inv_s7_tail_row_loop;
+}
+fn api fb_copy_inv_s7(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_copy_inv_s7_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_copy_inv_s7_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s0_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s0_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s0_full_loop:
+    const u8 sbyte = [ES:src_off];
+    [idx] := [idx] | sbyte;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s0_full_loop;
+    }
+
+or_s0_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s0_full_row_loop;
+}
+fn fb_or_s0_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] | tail_byte;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s0_tail_row_loop;
+}
+fn api fb_or_s0(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s0_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s0_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s1_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s1_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 1;
+    const u8 src_hi = sbyte << 7;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s1_full_loop;
+    }
+
+or_s1_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s1_full_row_loop;
+}
+fn fb_or_s1_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 1;
+    const u8 tail_hi = tail_byte << 7;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s1_tail_row_loop;
+}
+fn api fb_or_s1(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s1_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s1_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s2_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s2_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s2_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 2;
+    const u8 src_hi = sbyte << 6;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s2_full_loop;
+    }
+
+or_s2_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s2_full_row_loop;
+}
+fn fb_or_s2_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 2;
+    const u8 tail_hi = tail_byte << 6;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s2_tail_row_loop;
+}
+fn api fb_or_s2(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s2_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s2_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s3_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s3_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s3_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 3;
+    const u8 src_hi = sbyte << 5;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s3_full_loop;
+    }
+
+or_s3_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s3_full_row_loop;
+}
+fn fb_or_s3_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 3;
+    const u8 tail_hi = tail_byte << 5;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s3_tail_row_loop;
+}
+fn api fb_or_s3(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s3_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s3_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s4_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s4_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s4_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 4;
+    const u8 src_hi = sbyte << 4;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s4_full_loop;
+    }
+
+or_s4_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s4_full_row_loop;
+}
+fn fb_or_s4_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 4;
+    const u8 tail_hi = tail_byte << 4;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s4_tail_row_loop;
+}
+fn api fb_or_s4(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s4_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s4_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s5_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s5_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s5_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 5;
+    const u8 src_hi = sbyte << 3;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s5_full_loop;
+    }
+
+or_s5_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s5_full_row_loop;
+}
+fn fb_or_s5_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 5;
+    const u8 tail_hi = tail_byte << 3;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s5_tail_row_loop;
+}
+fn api fb_or_s5(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s5_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s5_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s6_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s6_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s6_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 6;
+    const u8 src_hi = sbyte << 2;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s6_full_loop;
+    }
+
+or_s6_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s6_full_row_loop;
+}
+fn fb_or_s6_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 6;
+    const u8 tail_hi = tail_byte << 2;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s6_tail_row_loop;
+}
+fn api fb_or_s6(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s6_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s6_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_or_s7_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+or_s7_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+or_s7_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 7;
+    const u8 src_hi = sbyte << 1;
+    [idx] := [idx] | src_lo;
+    [idx + 1] := [idx + 1] | src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto or_s7_full_loop;
+    }
+
+or_s7_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s7_full_row_loop;
+}
+fn fb_or_s7_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+or_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 7;
+    const u8 tail_hi = tail_byte << 1;
+    [idx] := [idx] | tail_lo;
+    [idx + 1] := [idx + 1] | tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto or_s7_tail_row_loop;
+}
+fn api fb_or_s7(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_or_s7_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_or_s7_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s0_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s0_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s0_full_loop:
+    const u8 sbyte = [ES:src_off];
+    [idx] := [idx] ^ sbyte;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s0_full_loop;
+    }
+
+xor_s0_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s0_full_row_loop;
+}
+fn fb_xor_s0_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] ^ tail_byte;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s0_tail_row_loop;
+}
+fn api fb_xor_s0(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s0_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s0_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s1_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s1_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 1;
+    const u8 src_hi = sbyte << 7;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s1_full_loop;
+    }
+
+xor_s1_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s1_full_row_loop;
+}
+fn fb_xor_s1_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 1;
+    const u8 tail_hi = tail_byte << 7;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s1_tail_row_loop;
+}
+fn api fb_xor_s1(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s1_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s1_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s2_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s2_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s2_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 2;
+    const u8 src_hi = sbyte << 6;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s2_full_loop;
+    }
+
+xor_s2_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s2_full_row_loop;
+}
+fn fb_xor_s2_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 2;
+    const u8 tail_hi = tail_byte << 6;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s2_tail_row_loop;
+}
+fn api fb_xor_s2(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s2_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s2_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s3_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s3_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s3_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 3;
+    const u8 src_hi = sbyte << 5;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s3_full_loop;
+    }
+
+xor_s3_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s3_full_row_loop;
+}
+fn fb_xor_s3_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 3;
+    const u8 tail_hi = tail_byte << 5;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s3_tail_row_loop;
+}
+fn api fb_xor_s3(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s3_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s3_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s4_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s4_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s4_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 4;
+    const u8 src_hi = sbyte << 4;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s4_full_loop;
+    }
+
+xor_s4_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s4_full_row_loop;
+}
+fn fb_xor_s4_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 4;
+    const u8 tail_hi = tail_byte << 4;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s4_tail_row_loop;
+}
+fn api fb_xor_s4(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s4_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s4_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s5_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s5_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s5_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 5;
+    const u8 src_hi = sbyte << 3;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s5_full_loop;
+    }
+
+xor_s5_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s5_full_row_loop;
+}
+fn fb_xor_s5_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 5;
+    const u8 tail_hi = tail_byte << 3;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s5_tail_row_loop;
+}
+fn api fb_xor_s5(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s5_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s5_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s6_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s6_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s6_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 6;
+    const u8 src_hi = sbyte << 2;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s6_full_loop;
+    }
+
+xor_s6_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s6_full_row_loop;
+}
+fn fb_xor_s6_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 6;
+    const u8 tail_hi = tail_byte << 2;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s6_tail_row_loop;
+}
+fn api fb_xor_s6(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s6_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s6_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_xor_s7_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+xor_s7_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+xor_s7_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 7;
+    const u8 src_hi = sbyte << 1;
+    [idx] := [idx] ^ src_lo;
+    [idx + 1] := [idx + 1] ^ src_hi;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto xor_s7_full_loop;
+    }
+
+xor_s7_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s7_full_row_loop;
+}
+fn fb_xor_s7_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+xor_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 tail_byte = [ES:src_off] & wmask;
+    const u8 tail_lo = tail_byte >> 7;
+    const u8 tail_hi = tail_byte << 1;
+    [idx] := [idx] ^ tail_lo;
+    [idx + 1] := [idx + 1] ^ tail_hi;
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto xor_s7_tail_row_loop;
+}
+fn api fb_xor_s7(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_xor_s7_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_xor_s7_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s0_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s0_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s0_full_loop:
+    const u8 sbyte = [ES:src_off];
+    [idx] := [idx] & sbyte;
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s0_full_loop;
+    }
+
+and_s0_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s0_full_row_loop;
+}
+fn fb_and_s0_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & (tail_byte | ~wmask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s0_tail_row_loop;
+}
+fn api fb_and_s0(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s0_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s0_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s1_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s1_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 1;
+    const u8 src_hi = sbyte << 7;
+    [idx] := [idx] & (src_lo | 0x80);
+    [idx + 1] := [idx + 1] & (src_hi | 0x7F);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s1_full_loop;
+    }
+
+and_s1_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s1_full_row_loop;
+}
+fn fb_and_s1_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 1;
+    const u8 tail_hi_mask = wmask << 7;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 1) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 7) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s1_tail_row_loop;
+}
+fn api fb_and_s1(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s1_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s1_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s2_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s2_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s2_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 2;
+    const u8 src_hi = sbyte << 6;
+    [idx] := [idx] & (src_lo | 0xC0);
+    [idx + 1] := [idx + 1] & (src_hi | 0x3F);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s2_full_loop;
+    }
+
+and_s2_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s2_full_row_loop;
+}
+fn fb_and_s2_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 2;
+    const u8 tail_hi_mask = wmask << 6;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 2) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 6) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s2_tail_row_loop;
+}
+fn api fb_and_s2(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s2_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s2_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s3_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s3_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s3_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 3;
+    const u8 src_hi = sbyte << 5;
+    [idx] := [idx] & (src_lo | 0xE0);
+    [idx + 1] := [idx + 1] & (src_hi | 0x1F);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s3_full_loop;
+    }
+
+and_s3_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s3_full_row_loop;
+}
+fn fb_and_s3_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 3;
+    const u8 tail_hi_mask = wmask << 5;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 3) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 5) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s3_tail_row_loop;
+}
+fn api fb_and_s3(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s3_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s3_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s4_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s4_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s4_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 4;
+    const u8 src_hi = sbyte << 4;
+    [idx] := [idx] & (src_lo | 0xF0);
+    [idx + 1] := [idx + 1] & (src_hi | 0x0F);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s4_full_loop;
+    }
+
+and_s4_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s4_full_row_loop;
+}
+fn fb_and_s4_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 4;
+    const u8 tail_hi_mask = wmask << 4;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 4) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 4) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s4_tail_row_loop;
+}
+fn api fb_and_s4(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s4_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s4_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s5_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s5_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s5_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 5;
+    const u8 src_hi = sbyte << 3;
+    [idx] := [idx] & (src_lo | 0xF8);
+    [idx + 1] := [idx + 1] & (src_hi | 0x07);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s5_full_loop;
+    }
+
+and_s5_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s5_full_row_loop;
+}
+fn fb_and_s5_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 5;
+    const u8 tail_hi_mask = wmask << 3;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 5) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 3) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s5_tail_row_loop;
+}
+fn api fb_and_s5(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s5_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s5_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s6_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s6_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s6_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 6;
+    const u8 src_hi = sbyte << 2;
+    [idx] := [idx] & (src_lo | 0xFC);
+    [idx + 1] := [idx + 1] & (src_hi | 0x03);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s6_full_loop;
+    }
+
+and_s6_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s6_full_row_loop;
+}
+fn fb_and_s6_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 6;
+    const u8 tail_hi_mask = wmask << 2;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 6) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 2) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s6_tail_row_loop;
+}
+fn api fb_and_s6(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s6_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s6_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_and_s7_full(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, full_bytes: u16 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s7_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+and_s7_full_loop:
+    const u8 sbyte = [ES:src_off];
+    const u8 src_lo = sbyte >> 7;
+    const u8 src_hi = sbyte << 1;
+    [idx] := [idx] & (src_lo | 0xFE);
+    [idx + 1] := [idx + 1] & (src_hi | 0x01);
+
+    src_off := src_off + 1;
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto and_s7_full_loop;
+    }
+
+and_s7_full_next_row:
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s7_full_row_loop;
+}
+fn fb_and_s7_tail(src_seg: seg in ES, start_src_row: u16,
+                   src_stride: u16 in stack, tail_bits: u8 in stack,
+                   height: u8 in stack, start_dst_row: u16) {
+    u16 src_row = start_src_row;
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+and_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 src_off = src_row;
+    u16 idx = dst_row;
+
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 7;
+    const u8 tail_hi_mask = wmask << 1;
+    const u8 tail_byte = [ES:src_off] & wmask;
+    [idx] := [idx] & ((tail_byte >> 7) | ~tail_lo_mask);
+    [idx + 1] := [idx + 1] & ((tail_byte << 1) | ~tail_hi_mask);
+
+    src_row := src_row + src_stride;
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto and_s7_tail_row_loop;
+}
+fn api fb_and_s7(src_seg: seg in ES, start_src_row: u16 in AX,
+              src_stride: u16 in stack, width: u16 in stack,
+              height: u8 in stack, start_dst_row: u16 in BX)
+              clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_and_s7_full(src_seg, start_src_row, src_stride,
+                        full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_and_s7_tail(src_seg, start_src_row + full_bytes, src_stride,
+                        tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s0_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s0_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s0_full_loop:
+    [idx] := [idx] ^ 0xFF;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s0_full_loop;
+    }
+
+not_s0_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s0_full_row_loop;
+}
+fn fb_not_s0_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+
+not_s0_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ wmask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s0_tail_row_loop;
+}
+fn api fb_not_s0(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s0_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s0_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s1_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s1_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s1_full_loop:
+    [idx] := [idx] ^ 0x7F;
+    [idx + 1] := [idx + 1] ^ 0x80;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s1_full_loop;
+    }
+
+not_s1_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s1_full_row_loop;
+}
+fn fb_not_s1_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 1;
+    const u8 tail_hi_mask = wmask << 7;
+
+not_s1_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s1_tail_row_loop;
+}
+fn api fb_not_s1(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s1_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s1_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s2_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s2_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s2_full_loop:
+    [idx] := [idx] ^ 0x3F;
+    [idx + 1] := [idx + 1] ^ 0xC0;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s2_full_loop;
+    }
+
+not_s2_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s2_full_row_loop;
+}
+fn fb_not_s2_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 2;
+    const u8 tail_hi_mask = wmask << 6;
+
+not_s2_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s2_tail_row_loop;
+}
+fn api fb_not_s2(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s2_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s2_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s3_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s3_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s3_full_loop:
+    [idx] := [idx] ^ 0x1F;
+    [idx + 1] := [idx + 1] ^ 0xE0;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s3_full_loop;
+    }
+
+not_s3_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s3_full_row_loop;
+}
+fn fb_not_s3_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 3;
+    const u8 tail_hi_mask = wmask << 5;
+
+not_s3_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s3_tail_row_loop;
+}
+fn api fb_not_s3(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s3_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s3_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s4_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s4_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s4_full_loop:
+    [idx] := [idx] ^ 0x0F;
+    [idx + 1] := [idx + 1] ^ 0xF0;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s4_full_loop;
+    }
+
+not_s4_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s4_full_row_loop;
+}
+fn fb_not_s4_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 4;
+    const u8 tail_hi_mask = wmask << 4;
+
+not_s4_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s4_tail_row_loop;
+}
+fn api fb_not_s4(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s4_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s4_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s5_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s5_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s5_full_loop:
+    [idx] := [idx] ^ 0x07;
+    [idx + 1] := [idx + 1] ^ 0xF8;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s5_full_loop;
+    }
+
+not_s5_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s5_full_row_loop;
+}
+fn fb_not_s5_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 5;
+    const u8 tail_hi_mask = wmask << 3;
+
+not_s5_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s5_tail_row_loop;
+}
+fn api fb_not_s5(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s5_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s5_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s6_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s6_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s6_full_loop:
+    [idx] := [idx] ^ 0x03;
+    [idx + 1] := [idx + 1] ^ 0xFC;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s6_full_loop;
+    }
+
+not_s6_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s6_full_row_loop;
+}
+fn fb_not_s6_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 6;
+    const u8 tail_hi_mask = wmask << 2;
+
+not_s6_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s6_tail_row_loop;
+}
+fn api fb_not_s6(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s6_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s6_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+fn fb_not_s7_full(full_bytes: u16, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+
+not_s7_full_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+    u16 count = full_bytes;
+
+not_s7_full_loop:
+    [idx] := [idx] ^ 0x01;
+    [idx + 1] := [idx + 1] ^ 0xFE;
+
+    idx := idx + 1;
+    count := count - 1;
+    if (count != 0) {
+        goto not_s7_full_loop;
+    }
+
+not_s7_full_next_row:
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s7_full_row_loop;
+}
+fn fb_not_s7_tail(tail_bits: u8, height: u8,
+                  start_dst_row: u16) {
+    u16 dst_row = start_dst_row;
+    u8 rows_left = height;
+    const u8 wmask = 0xFF << (8 - tail_bits);
+    const u8 tail_lo_mask = wmask >> 7;
+    const u8 tail_hi_mask = wmask << 1;
+
+not_s7_tail_row_loop:
+    if (rows_left == 0) {
+        return;
+    }
+    u16 idx = dst_row;
+
+    [idx] := [idx] ^ tail_lo_mask;
+    [idx + 1] := [idx + 1] ^ tail_hi_mask;
+
+    dst_row := dst_row + LCD_SCAN_STRIDE;
+    rows_left := rows_left - 1;
+    goto not_s7_tail_row_loop;
+}
+fn api fb_not_s7(width: u16 in AX, height: u8 in BL, start_dst_row: u16 in CX)
+    clobbers(AX, CX, DX, BX, SI, DI, FLAGS) {
+    const u16 full_bytes = width >> 3;
+    const u8 tail_bits = (width & 0x07) as (u8);
+
+    if (full_bytes != 0) {
+        fb_not_s7_full(full_bytes, height, start_dst_row);
+    }
+    if (tail_bits != 0) {
+        fb_not_s7_tail(tail_bits, height, start_dst_row + full_bytes);
+    }
+}
+
+u16[8] fb_copy_inv_dispatch = {
+    &fb_copy_inv_s0, &fb_copy_inv_s1, &fb_copy_inv_s2, &fb_copy_inv_s3,
+    &fb_copy_inv_s4, &fb_copy_inv_s5, &fb_copy_inv_s6, &fb_copy_inv_s7
+};
+
+u16[8] fb_or_dispatch = {
+    &fb_or_s0, &fb_or_s1, &fb_or_s2, &fb_or_s3,
+    &fb_or_s4, &fb_or_s5, &fb_or_s6, &fb_or_s7
+};
+
+u16[8] fb_xor_dispatch = {
+    &fb_xor_s0, &fb_xor_s1, &fb_xor_s2, &fb_xor_s3,
+    &fb_xor_s4, &fb_xor_s5, &fb_xor_s6, &fb_xor_s7
+};
+
+u16[8] fb_and_dispatch = {
+    &fb_and_s0, &fb_and_s1, &fb_and_s2, &fb_and_s3,
+    &fb_and_s4, &fb_and_s5, &fb_and_s6, &fb_and_s7
+};
+
+u16[8] fb_not_dispatch = {
+    &fb_not_s0, &fb_not_s1, &fb_not_s2, &fb_not_s3,
+    &fb_not_s4, &fb_not_s5, &fb_not_s6, &fb_not_s7
+};
+
+// ---------------------------------------------------------------------------
+// API: generic 1bpp blit operations
+//
+// desc: far pointer to FbBlit. Source rows are MSB-first, with stride
+// bytes between rows. Width is in pixels.
+// ---------------------------------------------------------------------------
+
+fn api far fb_blit_copy_inv(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 src_row = [ES:SI + FB_BUF_SRC_OFF];
+    const u16 src_stride = [ES:SI + FB_BUF_STRIDE];
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const seg src_seg = [ES:SI + FB_BUF_SRC_SEG] as (seg);
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_copy_inv_dispatch[shift];
+    target as fb_copy_inv_s0(src_seg, src_row, src_stride,
+                             width, height, dst_row);
+}
+
+fn api far fb_blit_or(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 src_row = [ES:SI + FB_BUF_SRC_OFF];
+    const u16 src_stride = [ES:SI + FB_BUF_STRIDE];
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const seg src_seg = [ES:SI + FB_BUF_SRC_SEG] as (seg);
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_or_dispatch[shift];
+    target as fb_or_s0(src_seg, src_row, src_stride,
+                       width, height, dst_row);
+}
+
+fn api far fb_blit_xor(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 src_row = [ES:SI + FB_BUF_SRC_OFF];
+    const u16 src_stride = [ES:SI + FB_BUF_STRIDE];
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const seg src_seg = [ES:SI + FB_BUF_SRC_SEG] as (seg);
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_xor_dispatch[shift];
+    target as fb_xor_s0(src_seg, src_row, src_stride,
+                        width, height, dst_row);
+}
+
+fn api far fb_blit_and(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 src_row = [ES:SI + FB_BUF_SRC_OFF];
+    const u16 src_stride = [ES:SI + FB_BUF_STRIDE];
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const seg src_seg = [ES:SI + FB_BUF_SRC_SEG] as (seg);
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_and_dispatch[shift];
+    target as fb_and_s0(src_seg, src_row, src_stride,
+                        width, height, dst_row);
+}
+
+fn api far fb_blit_not(desc: far32 in ES:SI)
+    ds(0x0000) clobbers(AX, CX, DX, BX, SI, DI, ES, FLAGS) {
+    const u16 width = [ES:SI + FB_BUF_WIDTH];
+    const u8 height = [ES:SI + FB_BUF_HEIGHT];
+    const u16 dst_x = [ES:SI + FB_BLIT_DST_X];
+    const u8 dst_y = [ES:SI + FB_BLIT_DST_Y];
+    const u16 shift = dst_x & 0x07;
+    const u16 dst_row = fb_start_index(dst_x, dst_y);
+    const u16 target = fb_not_dispatch[shift];
+    target as fb_not_s0(width, height, dst_row);
+}
+
+// ---------------------------------------------------------------------------
+// Jump table
+// ---------------------------------------------------------------------------
+
+pub far32[7] fb_table = {
+    @fb_clear,
+    @fb_blit_copy,
+    @fb_blit_copy_inv,
+    @fb_blit_or,
+    @fb_blit_xor,
+    @fb_blit_and,
+    @fb_blit_not
+};
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+pub fn fb_init() {
+    fb_clear();
+    register(DEV_FB, FB_VERSION, @fb_table, FB_API_SIZE);
+}

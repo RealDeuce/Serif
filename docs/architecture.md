@@ -21,6 +21,11 @@ Bank 7  Port 0x17 = 0x00   E0000-FFFFF  ROM bank 0
 0x2000-0x3F9F   Stack (8096 bytes, grows downward from SP=0x3FA0)
 ```
 
+Each T400 LCD scan row reserves 64 bytes: 60 visible framebuffer
+bytes followed by 4 currently-unused bytes. `fb_clear()` clears only
+the visible 60-byte span so those row trailers remain available for
+future metadata such as console cell attributes.
+
 LCD buffer size is model-dependent: T200/T500 use 128 rows (8KB at
 0x1000–0x2FFF), pushing the stack to 0x3000–0x4F9F. Compile-time
 target selection is planned once Nib supports it.
@@ -45,7 +50,7 @@ The reset vector at FFFF:0000 performs the following steps:
 Some drivers depend on others being initialized first:
 
 1. Shared gate-array latches and IRQ controller
-2. Display (so subsequent drivers can report errors)
+2. Display: LCD base selector, framebuffer, then console
 3. Keyboard
 4. Timer
 5. Buzzer
@@ -235,7 +240,9 @@ src/
   rtc.nib         TC8521AP RTC driver
   timer.nib       Gate array one-shot timer driver
   fdc.nib         N82077AA FDC constants (T200/T500)
-  lcd.nib         LCD display driver (blit, text console, cursor)
+  lcd.nib         LCD hardware base-select driver
+  fb.nib          Public 1bpp framebuffer/blitter driver
+  console.nib     Public 80x8 text console driver
   font.nib        8×8 character font (from DreamWriter ROM)
   buzzer.nib      Tone generator driver
   parallel.nib    Centronics parallel port driver
